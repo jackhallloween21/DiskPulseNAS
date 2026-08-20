@@ -145,6 +145,18 @@ class WebMediaPlayer {
     this.updatePlayButton();
   }
 
+  playDirectPath(relPath, category, title) {
+    const rawUrl = api.getRawFileUrl(relPath);
+    const fname = title || relPath.split('/').pop();
+    const isVideo = category === 'video' || /\.(mp4|mkv|webm|avi|mov)$/i.test(relPath);
+
+    if (isVideo) {
+      this.playVideo(rawUrl, fname);
+    } else {
+      this.playAudio(rawUrl, fname);
+    }
+  }
+
   togglePlay() {
     const el = this.getActiveElement();
     if (!el || !el.src) {

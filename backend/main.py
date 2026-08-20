@@ -20,6 +20,8 @@ from backend.setup_manager import (
     get_available_drives, apply_setup, is_setup_complete,
     reset_setup, load_config
 )
+from backend.speedtest_service import speedtest_manager, run_speed_test, quick_ping_test
+
 
 app = FastAPI(
     title="DiskPulse NAS Hub",
@@ -248,6 +250,19 @@ async def retry_download(task_id: str):
 async def delete_download(task_id: str, delete_file: bool = False):
     success = download_manager.delete_task(task_id, delete_file)
     return {"success": success}
+
+# ----------------- Speed Test Routes -----------------
+@app.post("/api/speedtest/run")
+async def trigger_speedtest():
+    return await run_speed_test()
+
+@app.get("/api/speedtest/latest")
+async def get_latest_speedtest():
+    return speedtest_manager.get_status()
+
+@app.get("/api/speedtest/ping")
+async def get_quick_ping():
+    return await quick_ping_test()
 
 # ----------------- Embedded Terminal Routes -----------------
 @app.post("/api/terminal/exec")

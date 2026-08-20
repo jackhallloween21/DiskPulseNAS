@@ -14,6 +14,7 @@ class DashboardVisualizer {
     
     this.initCharts();
     this.bindEvents();
+    this.initSpeedTest();
   }
 
   initCharts() {
@@ -269,6 +270,126 @@ class DashboardVisualizer {
         </tr>
       `).join('');
       if (window.lucide) lucide.createIcons();
+    }
+  }
+
+  // Speed Test Methods
+  initSpeedTest() {
+    const btnRun = document.getElementById('btn-run-speedtest');
+    btnRun?.addEventListener('click', () => this.handleRunSpeedTest());
+
+    // Initial load of latest speed test result
+    this.loadSpeedTestStatus();
+  }
+
+  async loadSpeedTestStatus() {
+    try {
+      const res = await api.getSpeedTestLatest();
+      this.renderSpeedTest(res);
+    } catch (e) {
+      console.warn('Could not load speedtest status:', e);
+    }
+  }
+
+  async handleRunSpeedTest() {
+    const btn = document.getElementById('btn-run-speedtest');
+    const btnText = document.getElementById('btn-run-speedtest-text');
+    const badge = document.getElementById('speedtest-status-badge');
+
+    if (btn) btn.disabled = true;
+    if (btnText) btnText.textContent = 'Testing Speed...';
+    if (badge) {
+      badge.textContent = 'TESTING...';
+      badge.style.background = 'rgba(245,158,11,0.15)';
+      badge.style.color = 'var(--accent-amber)';
+    }
+
+    try {
+      await api.runSpeedTest();
+
+      // Poll until speed test finishes
+      const pollInterval = setInterval(async () => {
+        try {
+          const res = await api.getSpeedTestLatest();
+          this.renderSpeedTest(res);
+
+          if (!res.is_running) {
+            clearInterval(pollInterval);
+            if (btn) btn.disabled = false;
+            if (btnText) btnText.textContent = 'Run Speed Test';
+          }
+        } catch (_) {
+          clearInterval(pollInterval);
+          if (btn) btn.disabled = false;
+          if (btnText) btnText.textContent = 'Run Speed Test';
+        }
+      }, 1500);
+    } catch (err) {
+      alert(`Speed test failed: ${err.message}`);
+      if (btn) btn.disabled = false;
+      if (btnText) btnText.textContent = 'Run Speed Test';
+    }
+  }
+
+  renderSpeedTest(data) {
+    if (!data) return;
+
+    const latest = data.latest || data;
+    const isRunning = data.is_running;
+    const badge = document.getElementById('speedtest-status-badge');
+
+    if (badge) {
+      if (isRunning) {
+        badge.textContent = 'TESTING...';
+        badge.style.background = 'rgba(245,158,11,0.15)';
+        badge.style.color = 'var(--accent-amber)';
+      } else if (latest.status === 'completed') {
+        badge.textContent = 'ONLINE & TESTED';
+        badge.style.background = 'rgba(16,185,129,0.15)';
+        badge.style.color = 'var(--accent-emerald)';
+      } else if (latest.status === 'error') {
+        badge.textContent = 'TEST ERROR';
+        badge.style.background = 'rgba(244,63,94,0.15)';
+        badge.style.color = 'var(--accent-rose)';
+      } else {
+        badge.textContent = 'READY';
+        badge.style.background = 'rgba(56,189,248,0.15)';
+        badge.style.color = 'var(--accent-blue)';
+      }
+    }
+
+    const dlVal = document.getElementById('st-download-val');
+    const ulVal = document.getElementById('st-upload-val');
+    const pingVal = document.getElementById('st-ping-val');
+    const ispVal = document.getElementById('st-isp-val');
+    const serverVal = document.getElementById('st-server-val');
+    const lastTestedVal = document.getElementById('st-last-tested');
+    const clientIpVal = document.getElementById('st-client-ip');
+
+    if (dlVal && latest.download_mbps !== undefined) {
+      dlVal.innerHTML = `${latest.download_mbps} <span style="font-size: 0.85rem; font-weight: 500;">Mbps</span>`;
+    }
+    if (ulVal && latest.upload_mbps !== undefined) {
+      ulVal.innerHTML = `${latest.upload_mbps} <span style="font-size: 0.85rem; font-weight: 500;">Mbps</span>`;
+    }
+    if (pingVal && latest.ping_ms !== undefined) {
+      pingVal.innerHTML = `${latest.ping_ms} <span style="font-size: 0.85rem; font-weight: 500;">ms</span>`;
+    }
+    if (ispVal && latest.isp) {
+      ispVal.textContent = latest.isp;
+    }
+    if (serverVal && latest.server) {
+      const s = latest.server;
+      const sName = s.name || s.sponsor || 'Default';
+      const sCountry = s.country ? ` (${s.country})` : '';
+      serverVal.textContent = `Server: ${sName}${sCountry}`;
+    }
+    if (clientIpVal && latest.client_ip) {
+      clientIpVal.textContent = latest.client_ip;
+    }
+    if (lastTestedVal && latest.timestamp) {
+      const d = new Date(latest.timestamp * 1000);
+      lastTestedVal.textContent = d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
     }
   }
 }

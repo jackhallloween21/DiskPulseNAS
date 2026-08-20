@@ -9,7 +9,8 @@
 - 📊 **Real-Time System & Drive Telemetry**: Live storage consumption, read/write IOPS, MB/s bandwidth, per-core CPU load, RAM allocation, and S.M.A.R.T. temperature health watchdog over WebSockets.
 - 🗂️ **Interactive Web File Manager**: Full-featured file browser with breadcrumb navigation, dual view (Grid & List), file creation, search, rename, move, copy, deletion, and batch ZIP archive downloads.
 - 💻 **Embedded Web Terminal Shell Widget**: Execute safe Linux/Unix file management commands (`ls`, `ll`, `cd`, `mkdir`, `mv`, `cp`, `rm`, `cat`, `echo`, `touch`, `du`, `stat`, `df`, `top`, `free`, `diskpulse`) directly from your browser with ANSI color output.
-- ⚡ **High-Speed Download Manager**: Download HTTP/HTTPS URLs and Magnet/Torrent links with live speed monitoring, pause/resume, category tagging, and automatic directory organization.
+- ⚡ **High-Speed Multi-Engine Downloader**: Download HTTP/HTTPS URLs, YouTube/video links (via `yt-dlp`), and Magnet/Torrent links (natively powered by `libtorrent` on Windows & Linux or optional Aria2) with live speed monitoring, pause/resume, category tagging, and automatic directory organization.
+- 🚀 **NAS Network & Internet Speed Test**: Real-time server throughput benchmark for Download Mbps, Upload Mbps, Ping latency, and ISP/Server location with one-click test execution and CDN fallbacks.
 - 📤 **Drag-and-Drop Multi-Device Uploader**: Upload large files seamlessly with real-time queue tracking and instant Mobile QR Pairing for phone-to-NAS uploading.
 - 🎬 **In-Browser Web Media Player**: High-fidelity audio player with animated canvas waveform visualizer and streaming video player with playback speed controls.
 - 🐍 **Python FastAPI Standalone Server**: Built-in 1-click NAS package generator for Docker Compose, TrueNAS SCALE, Synology DSM 7, and Systemd services.
@@ -19,7 +20,7 @@
 ## ⚡ Quick Start
 
 ### 1. Requirements
-- Python 3.10+ (Python 3.13 recommended)
+- Python 3.10+ (Python 3.11/3.12/3.13 supported on Windows & Linux)
 - No Node.js/npm required!
 
 ### 2. Install & Run

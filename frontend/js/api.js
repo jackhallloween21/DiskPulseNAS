@@ -185,6 +185,19 @@ class DiskPulseAPI {
     return this.request(`/api/downloads/${taskId}?delete_file=${deleteFile}`, { method: 'DELETE' });
   }
 
+  // Speed Test Endpoints
+  async getSpeedTestLatest() {
+    return this.request('/api/speedtest/latest');
+  }
+
+  async runSpeedTest() {
+    return this.request('/api/speedtest/run', { method: 'POST' });
+  }
+
+  async getSpeedTestPing() {
+    return this.request('/api/speedtest/ping');
+  }
+
   // Terminal API
   async execTerminalCommand(command, sessionId = "default") {
     return this.request('/api/terminal/exec', {

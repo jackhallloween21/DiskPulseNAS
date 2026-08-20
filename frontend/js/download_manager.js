@@ -135,6 +135,20 @@ class DownloadManagerView {
             </div>
 
             <div class="dl-task-actions">
+              ${isCompleted ? `
+                <button class="btn btn-secondary btn-icon" style="width: 30px; height: 30px;" onclick="downloadManager.openInFileManager('${t.target_dir}')" title="Open in File Manager">
+                  <i data-lucide="folder-open" style="width: 14px; height: 14px;"></i>
+                </button>
+                ${(t.is_media || t.category === 'media') ? `
+                  <button class="btn btn-primary btn-icon" style="width: 30px; height: 30px;" onclick="downloadManager.playInMediaHub('${t.file_rel_path}', '${t.filename.replace(/'/g, "\\'")}')" title="Play in Media Hub">
+                    <i data-lucide="play" style="width: 14px; height: 14px;"></i>
+                  </button>
+                ` : ''}
+                <button class="btn btn-secondary btn-icon" style="width: 30px; height: 30px;" onclick="downloadManager.downloadToBrowser('${t.file_rel_path}')" title="Download to Device">
+                  <i data-lucide="download" style="width: 14px; height: 14px;"></i>
+                </button>
+              ` : ''}
+
               ${isDownloading ? `
                 <button class="btn btn-secondary btn-icon" style="width: 30px; height: 30px;" onclick="downloadManager.pauseTask('${t.task_id}')" title="Pause">
                   <i data-lucide="pause" style="width: 14px; height: 14px;"></i>
@@ -167,6 +181,7 @@ class DownloadManagerView {
             <div>
               <span>${t.downloaded_human} / ${t.total_human} (${t.progress_percent}%)</span>
               ${t.is_magnet ? `<span style="margin-left: 12px; color: var(--accent-violet);">Peers: ${t.peers} | Seeds: ${t.seeds}</span>` : ''}
+              ${t.backend ? `<span class="nav-badge" style="margin-left: 8px; font-size: 0.65rem;">${t.backend}</span>` : ''}
             </div>
             <div>
               ${isDownloading ? `
@@ -181,6 +196,20 @@ class DownloadManagerView {
     }).join('');
 
     if (window.lucide) lucide.createIcons();
+  }
+
+  openInFileManager(targetDir) {
+    app.switchView('files');
+    fileManager.navigateTo(targetDir);
+  }
+
+  playInMediaHub(fileRelPath, filename) {
+    app.switchView('media');
+    mediaPlayer.playDirectPath(fileRelPath, 'media', filename);
+  }
+
+  downloadToBrowser(fileRelPath) {
+    window.open(`${api.baseUrl}/api/files/download?path=${encodeURIComponent(fileRelPath)}`, '_blank');
   }
 
   async pauseTask(taskId) {
