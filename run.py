@@ -43,7 +43,7 @@ def main():
         if cfg.get("seed_demo_data", True) and not any(Path(STORAGE_ROOT).iterdir()):
             try:
                 from generate_demo_data import generate_sample_storage
-                generate_sample_storage()
+                generate_sample_storage(STORAGE_ROOT)
             except Exception as e:
                 print(f"Note: Could not generate initial demo data: {e}")
 

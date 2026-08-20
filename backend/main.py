@@ -14,7 +14,7 @@ from backend.config import STORAGE_ROOT, FRONTEND_DIR, TELEMETRY_INTERVAL_SECS, 
 from backend.telemetry import telemetry_engine
 from backend.file_manager import file_manager
 from backend.download_engine import download_manager
-from backend.terminal_emulator import get_or_create_session
+from backend.terminal_emulator import get_or_create_session, sessions
 from backend.nas_generator import nas_generator
 from backend.setup_manager import (
     get_available_drives, apply_setup, is_setup_complete,
@@ -263,9 +263,9 @@ async def websocket_terminal(websocket: WebSocket):
     session = get_or_create_session(session_id)
     
     # Send welcome banner
-    banner, _ = session.execute("diskpulse")
+    banner_result = session.execute("diskpulse")
     await websocket.send_json({
-        "output": banner + f"Interactive NAS Shell initialized.\nType 'help' for commands.\n",
+        "output": banner_result["output"] + f"Interactive NAS Shell initialized.\nType 'help' for commands.\n",
         "cwd": session.get_prompt_path(),
         "exit_code": 0
     })
@@ -373,13 +373,13 @@ async def configure_setup(req: SetupConfigRequest):
     # self.root_dir at construction time - repoint it directly.
     file_manager.set_root(new_root)
 
-    # Seed demo data if requested
+    # Seed demo data if requested - pass the chosen path explicitly so it
+    # always lands in the wizard-selected directory, never the repo's
+    # own default folder.
     if req.seed_demo_data:
         try:
-            import generate_demo_data as _gdd
-            _gdd.STORAGE_ROOT = new_root
-            _gdd.generate_sample_storage.__globals__['STORAGE_ROOT'] = new_root
-            _gdd.generate_sample_storage()
+            from generate_demo_data import generate_sample_storage
+            generate_sample_storage(new_root)
         except Exception as e:
             print(f"Demo data seeding warning: {e}")
 
