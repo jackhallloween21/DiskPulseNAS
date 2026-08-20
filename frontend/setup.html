@@ -1,0 +1,1138 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>DiskPulse NAS — Initial Setup</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <script src="https://unpkg.com/lucide@latest"></script>
+  <style>
+    :root {
+      --bg-primary: #060a12;
+      --bg-secondary: #0e1726;
+      --bg-card: rgba(14, 23, 38, 0.75);
+      --bg-card-hover: rgba(22, 37, 60, 0.90);
+      --border-glass: rgba(255,255,255,0.08);
+      --border-hover: rgba(0,242,254,0.35);
+      --accent-cyan: #00f2fe;
+      --accent-blue: #38bdf8;
+      --accent-emerald: #10b981;
+      --accent-violet: #8b5cf6;
+      --accent-amber: #f59e0b;
+      --accent-rose: #f43f5e;
+      --text-main: #f8fafc;
+      --text-muted: #94a3b8;
+      --text-dim: #64748b;
+      --grad-primary: linear-gradient(135deg, #00f2fe 0%, #4facfe 100%);
+      --grad-emerald: linear-gradient(135deg, #10b981 0%, #059669 100%);
+      --grad-violet: linear-gradient(135deg, #8b5cf6 0%, #6366f1 100%);
+      --radius-sm: 8px;
+      --radius-md: 12px;
+      --radius-lg: 18px;
+      --radius-full: 9999px;
+      --font: 'Inter', system-ui, sans-serif;
+      --mono: 'JetBrains Mono', monospace;
+    }
+
+    * { margin:0; padding:0; box-sizing:border-box; }
+
+    body {
+      font-family: var(--font);
+      background: var(--bg-primary);
+      color: var(--text-main);
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: flex-start;
+      padding: 24px 16px 48px;
+      background-image:
+        radial-gradient(at 10% 10%, rgba(0,242,254,0.10) 0, transparent 55%),
+        radial-gradient(at 90% 5%,  rgba(139,92,246,0.10) 0, transparent 50%),
+        radial-gradient(at 50% 100%,rgba(16,185,129,0.07) 0, transparent 50%);
+      background-attachment: fixed;
+    }
+
+    /* ── Animated Grid Background ── */
+    body::before {
+      content: '';
+      position: fixed;
+      inset: 0;
+      background-image:
+        linear-gradient(rgba(0,242,254,0.04) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(0,242,254,0.04) 1px, transparent 1px);
+      background-size: 48px 48px;
+      pointer-events: none;
+      z-index: 0;
+    }
+
+    /* ── Scrollbar ── */
+    ::-webkit-scrollbar { width:6px; }
+    ::-webkit-scrollbar-track { background: rgba(15,23,42,0.5); }
+    ::-webkit-scrollbar-thumb { background: rgba(148,163,184,0.25); border-radius:99px; }
+
+    /* ── Header ── */
+    .setup-header {
+      position: relative;
+      z-index: 10;
+      text-align: center;
+      margin-bottom: 36px;
+      padding-top: 12px;
+    }
+    .brand-row {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 14px;
+      margin-bottom: 14px;
+    }
+    .brand-icon {
+      width: 52px; height: 52px;
+      border-radius: var(--radius-md);
+      background: var(--grad-primary);
+      display: flex; align-items: center; justify-content: center;
+      box-shadow: 0 0 28px rgba(0,242,254,0.35);
+    }
+    .brand-icon svg { width: 28px; height: 28px; color: #fff; }
+    h1 {
+      font-size: 2rem;
+      font-weight: 800;
+      letter-spacing: -1px;
+      background: linear-gradient(135deg, #fff 0%, #38bdf8 60%, #00f2fe 100%);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+    }
+    .setup-subtitle {
+      font-size: 1rem;
+      color: var(--text-muted);
+      max-width: 520px;
+      margin: 0 auto;
+    }
+
+    /* ── Step indicator ── */
+    .steps-indicator {
+      display: flex;
+      align-items: center;
+      gap: 0;
+      margin-bottom: 32px;
+      position: relative;
+      z-index: 10;
+    }
+    .step-dot {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 6px;
+    }
+    .step-circle {
+      width: 36px; height: 36px;
+      border-radius: 50%;
+      border: 2px solid var(--border-glass);
+      background: var(--bg-secondary);
+      display: flex; align-items: center; justify-content: center;
+      font-size: 0.85rem;
+      font-weight: 700;
+      color: var(--text-dim);
+      transition: all 0.3s ease;
+    }
+    .step-circle.active {
+      border-color: var(--accent-cyan);
+      background: rgba(0,242,254,0.15);
+      color: var(--accent-cyan);
+      box-shadow: 0 0 16px rgba(0,242,254,0.3);
+    }
+    .step-circle.done {
+      border-color: var(--accent-emerald);
+      background: rgba(16,185,129,0.15);
+      color: var(--accent-emerald);
+    }
+    .step-label {
+      font-size: 0.72rem;
+      color: var(--text-dim);
+      white-space: nowrap;
+    }
+    .step-label.active { color: var(--accent-cyan); font-weight: 600; }
+    .step-label.done   { color: var(--accent-emerald); }
+    .step-line {
+      flex: 1;
+      height: 2px;
+      background: var(--border-glass);
+      margin: 0 8px;
+      margin-bottom: 22px;
+      transition: background 0.3s ease;
+      min-width: 40px;
+    }
+    .step-line.done { background: var(--accent-emerald); }
+
+    /* ── Main card ── */
+    .setup-card {
+      position: relative;
+      z-index: 10;
+      width: 100%;
+      max-width: 820px;
+      background: var(--bg-card);
+      border: 1px solid var(--border-glass);
+      border-radius: var(--radius-lg);
+      backdrop-filter: blur(20px);
+      box-shadow: 0 24px 48px rgba(0,0,0,0.5);
+      overflow: hidden;
+    }
+
+    .step-panel {
+      display: none;
+      padding: 32px;
+      animation: fadeUp 0.3s ease forwards;
+    }
+    .step-panel.active { display: block; }
+
+    @keyframes fadeUp {
+      from { opacity:0; transform: translateY(10px); }
+      to   { opacity:1; transform: translateY(0); }
+    }
+
+    .panel-title {
+      font-size: 1.4rem;
+      font-weight: 700;
+      margin-bottom: 6px;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+    .panel-title svg { color: var(--accent-cyan); }
+    .panel-desc {
+      font-size: 0.9rem;
+      color: var(--text-muted);
+      margin-bottom: 24px;
+    }
+
+    /* ── Drive Grid ── */
+    .drives-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(340px, 1fr));
+      gap: 14px;
+      max-height: 440px;
+      overflow-y: auto;
+      padding-right: 4px;
+    }
+
+    .drive-card {
+      background: rgba(10,16,28,0.6);
+      border: 2px solid var(--border-glass);
+      border-radius: var(--radius-md);
+      padding: 16px 18px;
+      cursor: pointer;
+      transition: all 0.22s cubic-bezier(0.4,0,0.2,1);
+      position: relative;
+      overflow: hidden;
+    }
+    .drive-card:hover {
+      border-color: rgba(0,242,254,0.3);
+      background: var(--bg-card-hover);
+      transform: translateY(-1px);
+    }
+    .drive-card.selected {
+      border-color: var(--accent-cyan);
+      background: rgba(0,242,254,0.08);
+      box-shadow: 0 0 20px rgba(0,242,254,0.15);
+    }
+    .drive-card.system-drive {
+      border-color: rgba(245,158,11,0.25);
+    }
+    .drive-card.system-drive:hover {
+      border-color: rgba(245,158,11,0.5);
+    }
+    .drive-card.system-drive.selected {
+      border-color: var(--accent-amber);
+      background: rgba(245,158,11,0.08);
+      box-shadow: 0 0 20px rgba(245,158,11,0.15);
+    }
+    .drive-card.custom-card {
+      border-style: dashed;
+    }
+
+    .drive-header {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      margin-bottom: 10px;
+    }
+    .drive-name {
+      font-weight: 700;
+      font-size: 0.95rem;
+      color: var(--text-main);
+    }
+    .drive-mount {
+      font-size: 0.75rem;
+      color: var(--text-dim);
+      font-family: var(--mono);
+      margin-top: 2px;
+    }
+    .drive-badge {
+      font-size: 0.7rem;
+      padding: 2px 8px;
+      border-radius: var(--radius-full);
+      font-weight: 600;
+      flex-shrink: 0;
+    }
+    .badge-system  { background:rgba(245,158,11,0.15); color:var(--accent-amber);  border:1px solid rgba(245,158,11,0.3); }
+    .badge-free    { background:rgba(16,185,129,0.15);  color:var(--accent-emerald); border:1px solid rgba(16,185,129,0.3); }
+    .badge-custom  { background:rgba(139,92,246,0.15);  color:var(--accent-violet);  border:1px solid rgba(139,92,246,0.3); }
+
+    .drive-bar-wrap {
+      height: 6px;
+      background: rgba(255,255,255,0.07);
+      border-radius: 3px;
+      overflow: hidden;
+      margin-bottom: 8px;
+    }
+    .drive-bar-fill {
+      height: 100%;
+      border-radius: 3px;
+      background: var(--grad-primary);
+      transition: width 0.5s ease;
+    }
+    .drive-bar-fill.warn  { background: var(--grad-amber); }
+    .drive-bar-fill.crit  { background: linear-gradient(135deg,#f43f5e,#e11d48); }
+
+    .drive-stats {
+      display: flex;
+      justify-content: space-between;
+      font-size: 0.78rem;
+      color: var(--text-muted);
+    }
+    .drive-stats strong { color: var(--text-main); }
+    .drive-warning {
+      margin-top: 8px;
+      font-size: 0.75rem;
+      color: var(--accent-amber);
+      display: flex;
+      align-items: center;
+      gap: 4px;
+    }
+    .drive-check {
+      position: absolute;
+      top: 12px;
+      right: 12px;
+      width: 20px; height: 20px;
+      border-radius: 50%;
+      background: var(--accent-cyan);
+      display: none;
+      align-items: center;
+      justify-content: center;
+    }
+    .drive-card.selected .drive-check { display: flex; }
+
+    /* ── Custom path input ── */
+    .custom-path-box {
+      margin-top: 10px;
+      display: none;
+    }
+    .custom-path-box.visible { display: block; }
+
+    .form-label {
+      font-size: 0.82rem;
+      font-weight: 500;
+      color: var(--text-muted);
+      margin-bottom: 6px;
+      display: block;
+    }
+    .path-input-row {
+      display: flex;
+      gap: 8px;
+    }
+    .form-input {
+      flex: 1;
+      background: rgba(8,14,26,0.8);
+      border: 1px solid var(--border-glass);
+      border-radius: var(--radius-md);
+      padding: 10px 14px;
+      color: var(--text-main);
+      font-size: 0.9rem;
+      font-family: var(--mono);
+      outline: none;
+      transition: border-color 0.2s;
+    }
+    .form-input:focus { border-color: var(--accent-cyan); }
+
+    /* ── Step 3: Options ── */
+    .option-toggle-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 18px 20px;
+      background: rgba(10,16,28,0.6);
+      border: 1px solid var(--border-glass);
+      border-radius: var(--radius-md);
+      margin-bottom: 14px;
+      transition: border-color 0.2s;
+      cursor: pointer;
+    }
+    .option-toggle-row:hover { border-color: var(--border-hover); }
+    .option-toggle-left { display: flex; gap: 14px; align-items: flex-start; }
+    .option-icon {
+      width: 38px; height: 38px;
+      border-radius: var(--radius-sm);
+      display: flex; align-items: center; justify-content: center;
+      flex-shrink: 0;
+    }
+    .opt-demo { background: rgba(0,242,254,0.12); color: var(--accent-cyan); }
+    .opt-fresh { background: rgba(139,92,246,0.12); color: var(--accent-violet); }
+    .option-title { font-size: 0.95rem; font-weight: 600; margin-bottom: 2px; }
+    .option-desc  { font-size: 0.8rem; color: var(--text-muted); }
+
+    /* Toggle Switch */
+    .toggle {
+      width: 44px; height: 24px;
+      border-radius: 12px;
+      background: var(--border-glass);
+      position: relative;
+      cursor: pointer;
+      transition: background 0.25s;
+      flex-shrink: 0;
+      border: 1px solid rgba(255,255,255,0.1);
+    }
+    .toggle.on { background: var(--accent-cyan); }
+    .toggle::after {
+      content: '';
+      position: absolute;
+      width: 18px; height: 18px;
+      border-radius: 50%;
+      background: #fff;
+      top: 2px; left: 2px;
+      transition: transform 0.25s cubic-bezier(0.4,0,0.2,1);
+      box-shadow: 0 1px 4px rgba(0,0,0,0.3);
+    }
+    .toggle.on::after { transform: translateX(20px); }
+
+    /* ── Step 4: Summary ── */
+    .summary-item {
+      display: flex;
+      align-items: flex-start;
+      gap: 14px;
+      padding: 14px 0;
+      border-bottom: 1px solid var(--border-glass);
+    }
+    .summary-item:last-child { border-bottom: none; }
+    .summary-icon {
+      width: 36px; height: 36px;
+      border-radius: var(--radius-sm);
+      background: rgba(0,242,254,0.1);
+      color: var(--accent-cyan);
+      display: flex; align-items: center; justify-content: center;
+      flex-shrink: 0;
+    }
+    .summary-label { font-size: 0.78rem; color: var(--text-dim); margin-bottom: 3px; }
+    .summary-value { font-size: 0.95rem; font-weight: 600; font-family: var(--mono); color: var(--text-main); word-break: break-all; }
+
+    /* ── Buttons ── */
+    .btn-row {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 20px 32px;
+      border-top: 1px solid var(--border-glass);
+      background: rgba(10,14,24,0.5);
+    }
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      padding: 10px 22px;
+      border-radius: var(--radius-md);
+      font-size: 0.9rem;
+      font-weight: 600;
+      font-family: var(--font);
+      cursor: pointer;
+      border: 1px solid transparent;
+      transition: all 0.2s ease;
+    }
+    .btn svg { width: 16px; height: 16px; }
+    .btn-primary {
+      background: var(--grad-primary);
+      color: #050d18;
+      box-shadow: 0 4px 14px rgba(0,242,254,0.3);
+    }
+    .btn-primary:hover { transform: translateY(-1px); box-shadow: 0 6px 20px rgba(0,242,254,0.45); }
+    .btn-primary:disabled { opacity: 0.4; cursor: not-allowed; transform: none; }
+    .btn-secondary {
+      background: rgba(255,255,255,0.05);
+      color: var(--text-muted);
+      border-color: var(--border-glass);
+    }
+    .btn-secondary:hover { background: rgba(255,255,255,0.09); color: var(--text-main); }
+    .btn-success {
+      background: var(--grad-emerald);
+      color: #fff;
+      box-shadow: 0 4px 14px rgba(16,185,129,0.3);
+    }
+    .btn-success:hover { transform: translateY(-1px); box-shadow: 0 6px 20px rgba(16,185,129,0.45); }
+    .btn-ghost { background: transparent; color: var(--text-dim); border-color: transparent; padding: 10px 6px; }
+    .btn-ghost:hover { color: var(--text-muted); }
+
+    /* ── Loading spinner ── */
+    .spinner {
+      width: 18px; height: 18px;
+      border: 2px solid rgba(255,255,255,0.2);
+      border-top-color: #fff;
+      border-radius: 50%;
+      animation: spin 0.7s linear infinite;
+      display: inline-block;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    /* ── Launch progress ── */
+    .launch-box {
+      text-align: center;
+      padding: 40px 20px;
+    }
+    .launch-icon {
+      width: 80px; height: 80px;
+      border-radius: 50%;
+      background: var(--grad-primary);
+      display: flex; align-items: center; justify-content: center;
+      margin: 0 auto 20px;
+      box-shadow: 0 0 40px rgba(0,242,254,0.4);
+      animation: pulse 2s ease-in-out infinite;
+    }
+    @keyframes pulse {
+      0%,100% { box-shadow: 0 0 30px rgba(0,242,254,0.3); }
+      50% { box-shadow: 0 0 55px rgba(0,242,254,0.6); }
+    }
+    .launch-icon svg { width: 40px; height: 40px; color: #050d18; }
+    .launch-title { font-size: 1.5rem; font-weight: 700; margin-bottom: 8px; }
+    .launch-desc  { font-size: 0.9rem; color: var(--text-muted); }
+    .launch-steps-list {
+      margin-top: 24px;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+      text-align: left;
+      max-width: 360px;
+      margin-left: auto;
+      margin-right: auto;
+    }
+    .launch-step-item {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      font-size: 0.85rem;
+      color: var(--text-muted);
+    }
+    .launch-step-item.done { color: var(--accent-emerald); }
+    .launch-step-icon { width: 22px; height: 22px; flex-shrink: 0; }
+
+    /* ── Error msg ── */
+    .error-msg {
+      background: rgba(244,63,94,0.1);
+      border: 1px solid rgba(244,63,94,0.3);
+      border-radius: var(--radius-md);
+      padding: 10px 14px;
+      font-size: 0.85rem;
+      color: #fda4af;
+      margin-top: 14px;
+      display: none;
+    }
+    .error-msg.visible { display: block; }
+
+    /* ── OS pill ── */
+    .os-pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      background: rgba(16,185,129,0.1);
+      border: 1px solid rgba(16,185,129,0.25);
+      border-radius: var(--radius-full);
+      padding: 4px 12px;
+      font-size: 0.78rem;
+      font-weight: 600;
+      color: var(--accent-emerald);
+      margin-bottom: 20px;
+    }
+    .os-pill svg { width: 13px; height: 13px; }
+
+    /* ── Responsive ── */
+    @media (max-width: 600px) {
+      .drives-grid { grid-template-columns: 1fr; }
+      .step-panel  { padding: 20px; }
+      .btn-row     { padding: 16px 20px; }
+    }
+  </style>
+</head>
+<body>
+
+  <!-- ── Header ── -->
+  <header class="setup-header">
+    <div class="brand-row">
+      <div class="brand-icon"><i data-lucide="hard-drive-download"></i></div>
+      <h1>DiskPulse NAS</h1>
+    </div>
+    <p class="setup-subtitle">Welcome! Let's configure your NAS storage hub in a few simple steps.</p>
+  </header>
+
+  <!-- ── Step Indicator ── -->
+  <div class="steps-indicator">
+    <div class="step-dot">
+      <div class="step-circle active" id="sc-1">1</div>
+      <span class="step-label active" id="sl-1">Select Drive</span>
+    </div>
+    <div class="step-line" id="line-1"></div>
+    <div class="step-dot">
+      <div class="step-circle" id="sc-2">2</div>
+      <span class="step-label" id="sl-2">Storage Path</span>
+    </div>
+    <div class="step-line" id="line-2"></div>
+    <div class="step-dot">
+      <div class="step-circle" id="sc-3">3</div>
+      <span class="step-label" id="sl-3">Options</span>
+    </div>
+    <div class="step-line" id="line-3"></div>
+    <div class="step-dot">
+      <div class="step-circle" id="sc-4">4</div>
+      <span class="step-label" id="sl-4">Launch</span>
+    </div>
+  </div>
+
+  <!-- ── Card ── -->
+  <div class="setup-card">
+
+    <!-- ════════ STEP 1: Choose Drive ════════ -->
+    <div class="step-panel active" id="step-1">
+      <div class="panel-title">
+        <i data-lucide="hard-drive"></i>
+        Choose a Storage Drive or Partition
+      </div>
+      <p class="panel-desc">DiskPulse will use this drive to store your files, downloads, and media. Larger drives with more free space are recommended.</p>
+
+      <div id="os-pill-container"></div>
+
+      <div class="drives-grid" id="drives-grid">
+        <!-- Populated by JS -->
+        <div style="grid-column:1/-1; text-align:center; padding:40px; color:var(--text-dim);">
+          <div class="spinner" style="margin:0 auto 12px;"></div>
+          <p>Scanning available drives…</p>
+        </div>
+      </div>
+
+      <!-- Custom path input (shown when custom card selected) -->
+      <div class="custom-path-box" id="custom-path-box">
+        <label class="form-label" for="custom-path-input" style="margin-top:16px; display:block;">
+          <i data-lucide="folder" style="width:14px;height:14px;display:inline;vertical-align:middle;margin-right:4px;"></i>
+          Enter full path for storage folder:
+        </label>
+        <div class="path-input-row">
+          <input type="text" class="form-input" id="custom-path-input" placeholder="e.g. D:\DiskPulse_Storage or /mnt/storage/diskpulse">
+        </div>
+      </div>
+
+      <div class="error-msg" id="step1-error">Please select a drive or enter a valid custom path.</div>
+    </div>
+
+    <!-- ════════ STEP 2: Confirm Path ════════ -->
+    <div class="step-panel" id="step-2">
+      <div class="panel-title">
+        <i data-lucide="folder-open"></i>
+        Confirm Storage Directory
+      </div>
+      <p class="panel-desc">DiskPulse will create this folder on your chosen drive. You can change the sub-folder name if needed.</p>
+
+      <div style="background:rgba(10,16,28,0.7);border:1px solid var(--border-glass);border-radius:var(--radius-md);padding:20px;margin-bottom:20px;">
+        <div style="display:flex;gap:12px;align-items:flex-start;margin-bottom:16px;">
+          <div style="width:40px;height:40px;border-radius:var(--radius-sm);background:rgba(0,242,254,0.12);color:var(--accent-cyan);display:flex;align-items:center;justify-content:center;flex-shrink:0;">
+            <i data-lucide="hard-drive" style="width:20px;height:20px;"></i>
+          </div>
+          <div>
+            <div style="font-weight:700;margin-bottom:2px;" id="step2-drive-name">—</div>
+            <div style="font-size:0.8rem;color:var(--text-muted);" id="step2-drive-stats">—</div>
+          </div>
+        </div>
+
+        <label class="form-label" for="storage-path-input">Full Storage Path (editable):</label>
+        <input type="text" class="form-input" id="storage-path-input" style="width:100%;font-family:var(--mono);">
+      </div>
+
+      <div style="display:flex;gap:10px;align-items:center;background:rgba(16,185,129,0.07);border:1px solid rgba(16,185,129,0.2);border-radius:var(--radius-md);padding:12px 16px;">
+        <i data-lucide="shield-check" style="width:20px;height:20px;color:var(--accent-emerald);flex-shrink:0;"></i>
+        <span style="font-size:0.85rem;color:var(--text-muted);">The folder will be created automatically if it does not exist. A write-access test will be performed before proceeding.</span>
+      </div>
+
+      <div class="error-msg" id="step2-error"></div>
+    </div>
+
+    <!-- ════════ STEP 3: Options ════════ -->
+    <div class="step-panel" id="step-3">
+      <div class="panel-title">
+        <i data-lucide="settings-2"></i>
+        Initial Data & Preferences
+      </div>
+      <p class="panel-desc">Choose whether to start fresh or pre-populate your storage with demonstration media, documents, and sample files for testing.</p>
+
+      <!-- Option A: Demo data -->
+      <div class="option-toggle-row" id="opt-demo-row" onclick="toggleOption('demo')">
+        <div class="option-toggle-left">
+          <div class="option-icon opt-demo"><i data-lucide="database" style="width:18px;height:18px;"></i></div>
+          <div>
+            <div class="option-title">Pre-populate with Demo Data</div>
+            <div class="option-desc">Seeds your storage with sample Movies, Music, ISOs, Documents, and Scripts so you can explore all features immediately.</div>
+          </div>
+        </div>
+        <div class="toggle on" id="toggle-demo"></div>
+      </div>
+
+      <!-- Option B: Fresh start -->
+      <div class="option-toggle-row" id="opt-fresh-row" style="border-color:rgba(139,92,246,0.2);" onclick="toggleOption('fresh')">
+        <div class="option-toggle-left">
+          <div class="option-icon opt-fresh"><i data-lucide="sparkles" style="width:18px;height:18px;"></i></div>
+          <div>
+            <div class="option-title">Fresh Start (Empty Storage)</div>
+            <div class="option-desc">Begin with a completely empty storage pool — ideal for production NAS deployments where you'll add your own files.</div>
+          </div>
+        </div>
+        <div class="toggle" id="toggle-fresh"></div>
+      </div>
+
+      <div style="margin-top:8px;background:rgba(245,158,11,0.07);border:1px solid rgba(245,158,11,0.2);border-radius:var(--radius-md);padding:12px 16px;display:flex;gap:10px;align-items:flex-start;">
+        <i data-lucide="info" style="width:18px;height:18px;color:var(--accent-amber);flex-shrink:0;margin-top:1px;"></i>
+        <span style="font-size:0.82rem;color:var(--text-muted);">These options are mutually exclusive. Enabling one disables the other. Demo data is ~30 MB and can be deleted later from the File Manager.</span>
+      </div>
+    </div>
+
+    <!-- ════════ STEP 4: Summary & Launch ════════ -->
+    <div class="step-panel" id="step-4">
+      <div class="panel-title">
+        <i data-lucide="rocket"></i>
+        Review & Launch DiskPulse NAS
+      </div>
+      <p class="panel-desc">Everything looks good! Review your configuration below, then click Launch to start the server.</p>
+
+      <div id="summary-items">
+        <div class="summary-item">
+          <div class="summary-icon"><i data-lucide="hard-drive" style="width:18px;height:18px;"></i></div>
+          <div>
+            <div class="summary-label">Selected Storage Drive</div>
+            <div class="summary-value" id="sum-drive">—</div>
+          </div>
+        </div>
+        <div class="summary-item">
+          <div class="summary-icon"><i data-lucide="folder" style="width:18px;height:18px;"></i></div>
+          <div>
+            <div class="summary-label">Storage Root Path</div>
+            <div class="summary-value" id="sum-path">—</div>
+          </div>
+        </div>
+        <div class="summary-item">
+          <div class="summary-icon" style="background:rgba(16,185,129,0.1);color:var(--accent-emerald);"><i data-lucide="database" style="width:18px;height:18px;"></i></div>
+          <div>
+            <div class="summary-label">Demo Data</div>
+            <div class="summary-value" id="sum-demo">—</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Launch animation (initially hidden) -->
+      <div class="launch-box" id="launch-box" style="display:none;">
+        <div class="launch-icon"><i data-lucide="hard-drive-download" style="width:40px;height:40px;"></i></div>
+        <div class="launch-title">Launching DiskPulse NAS…</div>
+        <div class="launch-desc" id="launch-status-msg">Applying configuration and creating storage directories…</div>
+        <div class="launch-steps-list" id="launch-steps">
+          <div class="launch-step-item" id="ls-configure">
+            <div class="spinner launch-step-icon"></div>
+            <span>Writing configuration</span>
+          </div>
+          <div class="launch-step-item" id="ls-storage" style="opacity:0.4;">
+            <i data-lucide="circle" class="launch-step-icon" style="width:22px;height:22px;color:var(--text-dim);"></i>
+            <span>Creating storage directories</span>
+          </div>
+          <div class="launch-step-item" id="ls-seed" style="opacity:0.4;">
+            <i data-lucide="circle" class="launch-step-icon" style="width:22px;height:22px;color:var(--text-dim);"></i>
+            <span id="ls-seed-label">Seeding demo data</span>
+          </div>
+          <div class="launch-step-item" id="ls-redirect" style="opacity:0.4;">
+            <i data-lucide="circle" class="launch-step-icon" style="width:22px;height:22px;color:var(--text-dim);"></i>
+            <span>Redirecting to dashboard</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="error-msg" id="step4-error"></div>
+    </div>
+
+    <!-- ── Nav Buttons ── -->
+    <div class="btn-row" id="btn-row">
+      <button class="btn btn-ghost" id="btn-back" onclick="prevStep()" style="display:none;">
+        <i data-lucide="arrow-left"></i> Back
+      </button>
+      <span></span>
+      <button class="btn btn-primary" id="btn-next" onclick="nextStep()">
+        Next <i data-lucide="arrow-right"></i>
+      </button>
+    </div>
+  </div>
+
+  <!-- ── Footer note ── -->
+  <p style="margin-top:18px;font-size:0.78rem;color:var(--text-dim);position:relative;z-index:10;">
+    You can reconfigure storage at any time from the NAS Deployer settings inside the app.
+  </p>
+
+<script>
+  // ─── State ────────────────────────────────────────────────────────────────
+  let currentStep = 1;
+  const TOTAL_STEPS = 4;
+
+  let drives = [];
+  let selectedDrive = null;
+  let selectedPath = '';
+  let seedDemoData = true;   // default: seed demo data ON
+  let freshStart   = false;  // mirror toggle
+
+  // ─── Init ─────────────────────────────────────────────────────────────────
+  document.addEventListener('DOMContentLoaded', async () => {
+    if (window.lucide) lucide.createIcons();
+    await loadDrives();
+  });
+
+  async function loadDrives() {
+    try {
+      const res = await fetch('/api/setup/drives');
+      const data = await res.json();
+      drives = data.drives || [];
+      renderDrives();
+
+      // Detect OS and show pill
+      const statusRes = await fetch('/api/setup/status');
+      const statusData = await statusRes.json();
+      const osPill = document.getElementById('os-pill-container');
+      const icon = statusData.os === 'Windows' ? 'monitor' : 'terminal';
+      osPill.innerHTML = `
+        <div class="os-pill">
+          <i data-lucide="${icon}"></i>
+          ${statusData.os} ${statusData.os_release}
+        </div>`;
+      if (window.lucide) lucide.createIcons();
+    } catch(e) {
+      document.getElementById('drives-grid').innerHTML =
+        `<div style="grid-column:1/-1;text-align:center;padding:40px;color:#fda4af;">
+          <p>Failed to load drive list. Is the server running?</p>
+          <p style="font-size:0.8rem;color:var(--text-dim);margin-top:6px;">${e.message}</p>
+        </div>`;
+    }
+  }
+
+  function renderDrives() {
+    const grid = document.getElementById('drives-grid');
+    if (!drives.length) {
+      grid.innerHTML = '<div style="grid-column:1/-1;text-align:center;padding:40px;color:var(--text-dim);">No drives found.</div>';
+      return;
+    }
+
+    grid.innerHTML = drives.map((d, idx) => {
+      const isCustom = d.device === 'custom';
+      const isSystem = d.is_system;
+      const pct = d.percent_used;
+      let barClass = '';
+      if (pct >= 90) barClass = 'crit';
+      else if (pct >= 75) barClass = 'warn';
+
+      let badge = '';
+      if (isCustom)      badge = `<span class="drive-badge badge-custom">Custom</span>`;
+      else if (isSystem) badge = `<span class="drive-badge badge-system">System</span>`;
+      else               badge = `<span class="drive-badge badge-free">Available</span>`;
+
+      return `
+        <div class="drive-card ${isCustom ? 'custom-card' : ''} ${isSystem ? 'system-drive' : ''}"
+             id="drive-card-${idx}" onclick="selectDrive(${idx})">
+
+          <div class="drive-check">
+            <i data-lucide="check" style="width:12px;height:12px;color:#050d18;"></i>
+          </div>
+
+          <div class="drive-header">
+            <div>
+              <div class="drive-name">${isCustom
+                ? '<i data-lucide="folder-plus" style="width:16px;height:16px;display:inline;vertical-align:middle;margin-right:6px;color:var(--accent-violet);"></i> Custom Path'
+                : `<i data-lucide="hard-drive" style="width:16px;height:16px;display:inline;vertical-align:middle;margin-right:6px;color:${isSystem ? 'var(--accent-amber)' : 'var(--accent-cyan)'};"></i>${d.label}`
+              }</div>
+              <div class="drive-mount">${isCustom ? 'Enter a folder path below' : d.mountpoint + ' · ' + d.fstype}</div>
+            </div>
+            ${badge}
+          </div>
+
+          ${!isCustom ? `
+            <div class="drive-bar-wrap">
+              <div class="drive-bar-fill ${barClass}" style="width:${pct}%;"></div>
+            </div>
+            <div class="drive-stats">
+              <span>Used: <strong>${d.used_human}</strong></span>
+              <span>Free: <strong style="color:var(--accent-emerald);">${d.free_human}</strong></span>
+              <span>Total: <strong>${d.total_human}</strong></span>
+            </div>
+          ` : `
+            <div style="font-size:0.82rem;color:var(--text-muted);margin-top:4px;">
+              Specify any folder path on Windows, Linux, or a network mount.
+            </div>
+          `}
+
+          ${d.warning ? `<div class="drive-warning"><i data-lucide="alert-triangle" style="width:13px;height:13px;"></i> ${d.warning}</div>` : ''}
+        </div>
+      `;
+    }).join('');
+
+    if (window.lucide) lucide.createIcons();
+  }
+
+  function selectDrive(idx) {
+    const d = drives[idx];
+    selectedDrive = d;
+
+    // Visual selection
+    document.querySelectorAll('.drive-card').forEach(c => c.classList.remove('selected'));
+    document.getElementById(`drive-card-${idx}`)?.classList.add('selected');
+
+    // Custom path input visibility
+    const customBox = document.getElementById('custom-path-box');
+    if (d.device === 'custom') {
+      customBox.classList.add('visible');
+      document.getElementById('custom-path-input').focus();
+    } else {
+      customBox.classList.remove('visible');
+      selectedPath = d.suggested_path;
+    }
+
+    document.getElementById('step1-error').classList.remove('visible');
+    if (window.lucide) lucide.createIcons();
+  }
+
+  // ─── Options toggles ──────────────────────────────────────────────────────
+  function toggleOption(opt) {
+    if (opt === 'demo') {
+      seedDemoData = !seedDemoData;
+      freshStart = !seedDemoData;
+    } else {
+      freshStart = !freshStart;
+      seedDemoData = !freshStart;
+    }
+    document.getElementById('toggle-demo').classList.toggle('on', seedDemoData);
+    document.getElementById('toggle-fresh').classList.toggle('on', freshStart);
+  }
+
+  // ─── Step navigation ──────────────────────────────────────────────────────
+  function prevStep() {
+    if (currentStep > 1) goToStep(currentStep - 1);
+  }
+
+  async function nextStep() {
+    if (currentStep === 1) {
+      if (!validateStep1()) return;
+      populateStep2();
+      goToStep(2);
+    } else if (currentStep === 2) {
+      if (!validateStep2()) return;
+      goToStep(3);
+    } else if (currentStep === 3) {
+      populateStep4Summary();
+      goToStep(4);
+    } else if (currentStep === 4) {
+      await doLaunch();
+    }
+  }
+
+  function goToStep(step) {
+    document.getElementById(`step-${currentStep}`)?.classList.remove('active');
+    currentStep = step;
+    document.getElementById(`step-${currentStep}`)?.classList.add('active');
+    updateStepIndicators();
+    updateNavButtons();
+    if (window.lucide) lucide.createIcons();
+  }
+
+  function updateStepIndicators() {
+    for (let i = 1; i <= TOTAL_STEPS; i++) {
+      const circle = document.getElementById(`sc-${i}`);
+      const label  = document.getElementById(`sl-${i}`);
+      const line   = document.getElementById(`line-${i}`);
+
+      circle.classList.remove('active', 'done');
+      label.classList.remove('active', 'done');
+
+      if (i < currentStep) {
+        circle.classList.add('done');
+        circle.innerHTML = '<i data-lucide="check" style="width:14px;height:14px;"></i>';
+        label.classList.add('done');
+        if (line) line.classList.add('done');
+      } else if (i === currentStep) {
+        circle.classList.add('active');
+        circle.textContent = i;
+        label.classList.add('active');
+        if (line) line.classList.remove('done');
+      } else {
+        circle.textContent = i;
+        if (line) line.classList.remove('done');
+      }
+    }
+    if (window.lucide) lucide.createIcons();
+  }
+
+  function updateNavButtons() {
+    const backBtn = document.getElementById('btn-back');
+    const nextBtn = document.getElementById('btn-next');
+    const btnRow  = document.getElementById('btn-row');
+
+    backBtn.style.display = currentStep > 1 && currentStep < 4 ? 'inline-flex' : 'none';
+
+    if (currentStep === 4) {
+      nextBtn.innerHTML = '<i data-lucide="rocket"></i> Launch DiskPulse';
+      nextBtn.className = 'btn btn-success';
+    } else {
+      nextBtn.innerHTML = 'Next <i data-lucide="arrow-right"></i>';
+      nextBtn.className = 'btn btn-primary';
+    }
+
+    // Hide nav during launching
+    if (window._launching) btnRow.style.display = 'none';
+    if (window.lucide) lucide.createIcons();
+  }
+
+  // ─── Step validation ──────────────────────────────────────────────────────
+  function validateStep1() {
+    if (!selectedDrive) {
+      document.getElementById('step1-error').classList.add('visible');
+      return false;
+    }
+    if (selectedDrive.device === 'custom') {
+      const customPath = document.getElementById('custom-path-input').value.trim();
+      if (!customPath) {
+        document.getElementById('step1-error').textContent = 'Please enter a valid folder path.';
+        document.getElementById('step1-error').classList.add('visible');
+        return false;
+      }
+      selectedPath = customPath;
+    }
+    return true;
+  }
+
+  function validateStep2() {
+    const val = document.getElementById('storage-path-input').value.trim();
+    if (!val) {
+      showError('step2-error', 'Storage path cannot be empty.');
+      return false;
+    }
+    selectedPath = val;
+    hideError('step2-error');
+    return true;
+  }
+
+  // ─── Populate step 2 ──────────────────────────────────────────────────────
+  function populateStep2() {
+    const d = selectedDrive;
+    document.getElementById('step2-drive-name').textContent = d.device === 'custom' ? 'Custom Path' : d.label;
+    document.getElementById('step2-drive-stats').textContent =
+      d.device === 'custom'
+        ? 'User-specified path'
+        : `Free: ${d.free_human}  ·  Total: ${d.total_human}  ·  ${d.fstype}`;
+    document.getElementById('storage-path-input').value = selectedPath;
+  }
+
+  // ─── Populate step 4 summary ──────────────────────────────────────────────
+  function populateStep4Summary() {
+    selectedPath = document.getElementById('storage-path-input').value.trim();
+    document.getElementById('sum-drive').textContent =
+      selectedDrive.device === 'custom' ? 'Custom Path' : selectedDrive.label;
+    document.getElementById('sum-path').textContent = selectedPath;
+    document.getElementById('sum-demo').textContent = seedDemoData
+      ? '✓ Pre-populate with sample media, ISOs, and documents'
+      : '✗ Fresh start — empty storage pool';
+    document.getElementById('ls-seed-label').textContent = seedDemoData
+      ? 'Seeding demo data (~30 MB)' : 'Skipping demo data';
+  }
+
+  // ─── Launch ───────────────────────────────────────────────────────────────
+  async function doLaunch() {
+    window._launching = true;
+
+    // Hide summary, show animation
+    document.getElementById('summary-items').style.display = 'none';
+    document.getElementById('launch-box').style.display = 'block';
+    document.getElementById('btn-row').style.display = 'none';
+    document.getElementById('step4-error').classList.remove('visible');
+
+    try {
+      // Step visual: configuring
+      await delay(400);
+      markLaunchStep('ls-configure', true);
+      await delay(300);
+      markLaunchStep('ls-storage', false);
+      document.getElementById('ls-storage').style.opacity = '1';
+
+      const res = await fetch('/api/setup/configure', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          storage_root: selectedPath,
+          seed_demo_data: seedDemoData,
+          port: 8000
+        })
+      });
+
+      if (!res.ok) {
+        const err = await res.json();
+        throw new Error(err.detail || 'Configuration failed');
+      }
+
+      markLaunchStep('ls-storage', true);
+      await delay(300);
+
+      // Seed step
+      markLaunchStep('ls-seed', false);
+      document.getElementById('ls-seed').style.opacity = '1';
+      await delay(seedDemoData ? 1200 : 400);
+      markLaunchStep('ls-seed', true);
+
+      // Redirect step
+      markLaunchStep('ls-redirect', false);
+      document.getElementById('ls-redirect').style.opacity = '1';
+      document.getElementById('launch-status-msg').textContent = 'Setup complete! Launching dashboard…';
+      await delay(800);
+      markLaunchStep('ls-redirect', true);
+
+      await delay(500);
+      window.location.href = '/';
+
+    } catch(e) {
+      // Show error and re-enable button
+      window._launching = false;
+      document.getElementById('launch-box').style.display = 'none';
+      document.getElementById('summary-items').style.display = 'block';
+      document.getElementById('btn-row').style.display = 'flex';
+      showError('step4-error', e.message);
+    }
+  }
+
+  function markLaunchStep(id, done) {
+    const el = document.getElementById(id);
+    if (!el) return;
+    el.classList.toggle('done', done);
+    el.style.opacity = '1';
+    if (done) {
+      el.innerHTML = `
+        <i data-lucide="check-circle-2" class="launch-step-icon" style="color:var(--accent-emerald);width:22px;height:22px;"></i>
+        <span>${el.querySelector('span')?.textContent || ''}</span>`;
+    } else {
+      const label = el.querySelector('span')?.textContent || '';
+      el.innerHTML = `<div class="spinner launch-step-icon"></div><span>${label}</span>`;
+    }
+    if (window.lucide) lucide.createIcons();
+  }
+
+  // ─── Helpers ──────────────────────────────────────────────────────────────
+  function delay(ms) { return new Promise(r => setTimeout(r, ms)); }
+  function showError(id, msg) {
+    const el = document.getElementById(id);
+    if (el) { el.textContent = msg; el.classList.add('visible'); }
+  }
+  function hideError(id) {
+    document.getElementById(id)?.classList.remove('visible');
+  }
+</script>
+</body>
+</html>
