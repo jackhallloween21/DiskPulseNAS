@@ -353,21 +353,32 @@ async def configure_setup(req: SetupConfigRequest):
     if not result.get("success"):
         raise HTTPException(status_code=400, detail=result.get("error", "Setup failed"))
 
+    new_root = result["storage_root"]
+
+    # ── Propagate the newly chosen storage root to every already-running
+    # singleton / module. These were all instantiated at server startup
+    # using the OLD default root, so without this step the wizard's
+    # drive/path choice (and the "fresh start" option) silently has no
+    # effect until the whole process is restarted.
+    import backend.config as _cfg_mod
+    _cfg_mod.STORAGE_ROOT = new_root
+
+    import backend.download_engine as _download_engine_mod
+    _download_engine_mod.STORAGE_ROOT = new_root
+
+    import backend.telemetry as _telemetry_mod
+    _telemetry_mod.STORAGE_ROOT = new_root
+
+    # file_manager is a long-lived singleton with the root baked into
+    # self.root_dir at construction time - repoint it directly.
+    file_manager.set_root(new_root)
+
     # Seed demo data if requested
     if req.seed_demo_data:
         try:
-            from generate_demo_data import generate_sample_storage
-            import importlib, sys
-            # Re-import with the new storage root
-            import backend.config as _cfg_mod
-            _cfg_mod.STORAGE_ROOT = result["storage_root"]
-            from pathlib import Path as _P
-            _P(result["storage_root"]).mkdir(parents=True, exist_ok=True)
-            generate_sample_storage.__globals__['STORAGE_ROOT'] = result["storage_root"]
             import generate_demo_data as _gdd
-            import backend.config as _cfg
-            _cfg.STORAGE_ROOT = result["storage_root"]
-            _gdd.STORAGE_ROOT = result["storage_root"]
+            _gdd.STORAGE_ROOT = new_root
+            _gdd.generate_sample_storage.__globals__['STORAGE_ROOT'] = new_root
             _gdd.generate_sample_storage()
         except Exception as e:
             print(f"Demo data seeding warning: {e}")

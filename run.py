@@ -7,6 +7,7 @@ import sys
 import uvicorn
 from pathlib import Path
 from backend.config import HOST, PORT, STORAGE_ROOT
+from backend.setup_manager import is_setup_complete
 
 def print_banner():
     banner = f"""
@@ -27,16 +28,24 @@ def print_banner():
     print(banner)
 
 def main():
-    # Ensure storage pool exists
-    Path(STORAGE_ROOT).mkdir(parents=True, exist_ok=True)
-    
-    # Ensure demo data exists if empty
-    if not any(Path(STORAGE_ROOT).iterdir()):
-        try:
-            from generate_demo_data import generate_sample_storage
-            generate_sample_storage()
-        except Exception as e:
-            print(f"Note: Could not generate initial demo data: {e}")
+    # Only auto-provision/seed the storage root on startup once the
+    # first-run setup wizard has actually been completed. Doing this
+    # unconditionally (even before setup) used to plant demo data in the
+    # default storage_pool folder regardless of which drive or "fresh
+    # start" option the user later picked in the wizard, making it look
+    # like the wizard's choices had no effect.
+    if is_setup_complete():
+        Path(STORAGE_ROOT).mkdir(parents=True, exist_ok=True)
+
+        # Ensure demo data exists if empty and the user opted into it
+        from backend.setup_manager import load_config
+        cfg = load_config()
+        if cfg.get("seed_demo_data", True) and not any(Path(STORAGE_ROOT).iterdir()):
+            try:
+                from generate_demo_data import generate_sample_storage
+                generate_sample_storage()
+            except Exception as e:
+                print(f"Note: Could not generate initial demo data: {e}")
 
     print_banner()
 

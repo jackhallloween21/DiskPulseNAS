@@ -20,7 +20,13 @@ C_CYAN = "\033[36m"
 C_WHITE = "\033[37m"
 
 class TerminalSession:
-    def __init__(self, session_id: str, root_dir: str = STORAGE_ROOT):
+    def __init__(self, session_id: str, root_dir: str = None):
+        # Resolve lazily (not at import time) so a storage root chosen
+        # later via the setup wizard is picked up for new sessions
+        # without requiring a server restart.
+        if root_dir is None:
+            import backend.config as _config
+            root_dir = _config.STORAGE_ROOT
         self.session_id = session_id
         self.root_dir = Path(root_dir).resolve()
         self.current_dir = self.root_dir

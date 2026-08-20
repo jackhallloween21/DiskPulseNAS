@@ -12,8 +12,20 @@ import humanize
 from backend.config import STORAGE_ROOT
 
 class FileManager:
-    def __init__(self, root_dir: str = STORAGE_ROOT):
+    def __init__(self, root_dir: str = None):
+        # Resolve lazily (not at import time) so a storage root chosen
+        # later via the setup wizard is picked up correctly.
+        if root_dir is None:
+            import backend.config as _config
+            root_dir = _config.STORAGE_ROOT
         self.root_dir = Path(root_dir).resolve()
+        self.root_dir.mkdir(parents=True, exist_ok=True)
+
+    def set_root(self, new_root_dir: str) -> None:
+        """Repoint this (singleton) FileManager at a new storage root.
+        Called by the setup wizard after the user picks a drive/path so
+        the running server starts using it immediately, no restart needed."""
+        self.root_dir = Path(new_root_dir).resolve()
         self.root_dir.mkdir(parents=True, exist_ok=True)
 
     def _resolve_safe_path(self, target_rel_path: str) -> Path:
