@@ -565,6 +565,14 @@
                   </div>
                   <span id="media-track-note" style="font-size: 0.7rem; color: var(--text-dim);"></span>
                 </div>
+
+                <!-- Shown when the server is missing ffmpeg/ffprobe, so it's
+                     clear why the audio/subtitle controls above are absent. -->
+                <div class="media-ffmpeg-hint" id="media-ffmpeg-hint"
+                  style="display: none; align-items: center; gap: 8px; margin-top: 10px; padding: 8px 12px; border: 1px solid var(--border-glass); border-radius: 8px; background: rgba(245, 158, 11, 0.08);">
+                  <i data-lucide="alert-triangle" style="width: 15px; height: 15px; color: var(--accent-amber); flex-shrink: 0;"></i>
+                  <span id="media-ffmpeg-hint-text" style="font-size: 0.72rem; color: var(--text-muted);">Install ffmpeg on the server to enable audio-track switching and subtitles.</span>
+                </div>
               </div>
             </div>
 

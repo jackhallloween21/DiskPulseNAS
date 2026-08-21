@@ -198,6 +198,7 @@ class WebMediaPlayer {
     // No rel path (legacy caller) → simplest possible playback.
     if (!relPath) {
       if (trackRow) trackRow.style.display = 'none';
+      this.updateFfmpegHint(null);
       this.isTranscoded = false;
       this.videoEl.src = url;
       this.applyPlaybackRate();
@@ -217,6 +218,7 @@ class WebMediaPlayer {
     if (this.videoRelPath !== relPath) return;
 
     this.mediaInfo = info;
+    this.updateFfmpegHint(info);
     if (info && info.ok) {
       this.knownDuration = info.duration || 0;
       const audio = info.audio || [];
@@ -351,6 +353,34 @@ class WebMediaPlayer {
     }
   }
 
+  /**
+   * Show a hint when the server lacks ffmpeg/ffprobe, so the missing audio &
+   * subtitle controls are explained rather than silently absent. `info` is the
+   * /api/media/info payload (or null if the request failed / no rel path).
+   */
+  updateFfmpegHint(info) {
+    const hint = document.getElementById('media-ffmpeg-hint');
+    const text = document.getElementById('media-ffmpeg-hint-text');
+    if (!hint) return;
+
+    let msg = '';
+    if (info && (info.ffprobe === false || info.ffmpeg === false)) {
+      // Tools genuinely absent — this is the actionable case.
+      msg = 'Install ffmpeg on the server to enable audio-track switching and subtitles.';
+    } else if (info && info.ok === false && info.ffprobe !== false) {
+      // ffprobe is present but couldn't read this file (corrupt / unsupported).
+      msg = "Couldn't read this file's audio/subtitle tracks.";
+    }
+
+    if (msg) {
+      if (text) text.textContent = msg;
+      hint.style.display = 'flex';
+      if (window.lucide) lucide.createIcons();
+    } else {
+      hint.style.display = 'none';
+    }
+  }
+
   changeAudioTrack(idx) {
     if (!this.videoRelPath || this.activePlayer !== 'video') return;
     this.currentAudioIdx = idx;
@@ -415,6 +445,7 @@ class WebMediaPlayer {
     this.baseTime = 0;
     const trackRow = document.getElementById('media-track-row');
     if (trackRow) trackRow.style.display = 'none';
+    this.updateFfmpegHint(null);
 
     document.getElementById('audio-current-title').textContent = title || 'Streaming Audio';
     this.audioEl.src = url;

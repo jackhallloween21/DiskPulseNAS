@@ -12,7 +12,7 @@
 - ⚡ **High-Speed Multi-Engine Downloader**: Download HTTP/HTTPS URLs, YouTube/video links (via `yt-dlp`), and Magnet/Torrent links (natively powered by `libtorrent` on Windows & Linux or optional Aria2) with live speed monitoring, pause/resume, category tagging, and automatic directory organization. Pick exact **video quality** (up to 4K) or extract **audio** (MP3/M4A/Opus/FLAC/WAV) with a "Fetch formats" preview, resilient anti-bot handling (player-client rotation + browser-cookie auth), and a one-click in-app **yt-dlp updater**.
 - 🚀 **NAS Network & Internet Speed Test**: Real-time throughput benchmark for Download Mbps, Upload Mbps, Ping latency, and ISP / datacenter detection — one-click, powered by Cloudflare's global speed edge (no external CLI required).
 - 📤 **Drag-and-Drop Multi-Device Uploader**: Upload large files seamlessly with real-time queue tracking and instant Mobile QR Pairing for phone-to-NAS uploading.
-- 🎬 **In-Browser Web Media Player**: High-fidelity audio player with animated canvas waveform visualizer and streaming video player with playback speed controls.
+- 🎬 **In-Browser Web Media Player**: High-fidelity audio player with animated canvas waveform visualizer, plus a streaming video player with **audio-track switching** (dual-audio MKV), **embedded & external subtitles** (SRT/ASS/VTT sidecars), and **playback-speed** controls. Powered by `ffmpeg`/`ffprobe` on the server (see [install notes](#web-media-player--dual-audio--subtitles-ffmpeg) below).
 - 🐍 **Python FastAPI Standalone Server**: Built-in 1-click NAS package generator for Docker Compose, TrueNAS SCALE, Synology DSM 7, and Systemd services.
 
 ---
@@ -53,12 +53,45 @@ python run.py
 
 #### YouTube / video downloads (optional)
 
-- **ffmpeg** is needed to merge 1080p+ video and to convert audio to MP3/FLAC/WAV. Without it, video tops out at 720p (pre-muxed) and audio can only be saved as the original M4A/Opus stream.
-  - Windows: `winget install ffmpeg` (or `choco install ffmpeg`)
-  - Linux: `sudo apt install ffmpeg`
+- **ffmpeg** is needed to merge 1080p+ video and to convert audio to MP3/FLAC/WAV. Without it, video tops out at 720p (pre-muxed) and audio can only be saved as the original M4A/Opus stream. See [Web media player — dual audio & subtitles (ffmpeg)](#web-media-player--dual-audio--subtitles-ffmpeg) below for install commands — the same `ffmpeg` install covers both features.
 - **"Sign in to confirm you're not a bot"** from YouTube is almost always a stale `yt-dlp`. DiskPulse mitigates this automatically by rotating player clients and reusing a signed-in browser session's cookies, but the reliable cure is to keep `yt-dlp` current:
   - Click **Update yt-dlp** in the Add Download dialog, or run `pip install -U yt-dlp`, then restart DiskPulse.
   - For stubborn videos (age-restricted / members-only), stay logged into YouTube in Chrome, Edge or Firefox on the same machine — DiskPulse auto-detects and uses those cookies.
+
+#### Web media player — dual audio & subtitles (ffmpeg)
+
+The video player uses **`ffmpeg` and `ffprobe`** on the server to switch audio tracks (dual-audio MKV), extract embedded subtitles, load external `.srt`/`.ass`/`.vtt` sidecars, and remux/transcode non-browser-native formats (MKV, HEVC, AC3/DTS audio, etc.) on the fly.
+
+Both tools ship together in the `ffmpeg` package and must be on the server's **PATH**. Without them, the player silently falls back to plain direct playback — the **Audio** and **Subtitles** dropdowns stay hidden and an in-app hint reads *"Install ffmpeg on the server to enable audio-track switching and subtitles."*
+
+**Windows** — any one of:
+
+```powershell
+winget install ffmpeg           # Windows Package Manager
+choco install ffmpeg            # Chocolatey
+scoop install ffmpeg            # Scoop
+```
+
+Or install manually: download a build from [gyan.dev](https://www.gyan.dev/ffmpeg/builds/) or [BtbN/FFmpeg-Builds](https://github.com/BtbN/FFmpeg-Builds/releases), unzip it, and add the extracted `bin` folder (the one containing `ffmpeg.exe` and `ffprobe.exe`) to your **PATH** (System Properties → Environment Variables), then open a new terminal.
+
+**Linux** — use your distro's package manager:
+
+```bash
+sudo apt install ffmpeg         # Debian / Ubuntu / Raspberry Pi OS
+sudo dnf install ffmpeg         # Fedora (RHEL/CentOS: enable RPM Fusion first)
+sudo pacman -S ffmpeg           # Arch / Manjaro
+sudo zypper install ffmpeg      # openSUSE
+apk add ffmpeg                  # Alpine (also for slim Docker images)
+```
+
+**Verify** the server can see both binaries, then restart DiskPulse:
+
+```bash
+ffmpeg -version
+ffprobe -version
+```
+
+> **Docker:** the `python:3.13-slim` image in the Compose example below does **not** include ffmpeg. Add it to the startup command — e.g. change the `command:` to `bash -c "apt-get update && apt-get install -y ffmpeg && pip install -r requirements.txt && python run.py"` — or bake `RUN apt-get update && apt-get install -y ffmpeg` into a custom image.
 
 ### 2. Install & Run
 ```bash
