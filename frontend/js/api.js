@@ -133,6 +133,12 @@ class DiskPulseAPI {
     });
   }
 
+  // Live progress for a background move/copy (returns {status, total_bytes,
+  // transferred_bytes, ...}); poll it until status is no longer "running".
+  async getFileOperation(opId) {
+    return this.request(`/api/files/operation/${opId}`);
+  }
+
   async deleteFiles(paths) {
     return this.request('/api/files/delete', {
       method: 'POST',
@@ -167,6 +173,11 @@ class DiskPulseAPI {
     else params.set('track', String(track));
     if (offset && offset > 0) params.set('offset', String(offset));
     return `${this.baseUrl}/api/media/subtitle?${params.toString()}`;
+  }
+
+  getMediaThumbUrl(path, t = 0, w = 200) {
+    const params = new URLSearchParams({ path, t: String(t || 0), w: String(w || 200) });
+    return `${this.baseUrl}/api/media/thumb?${params.toString()}`;
   }
 
   // Download Manager Endpoints

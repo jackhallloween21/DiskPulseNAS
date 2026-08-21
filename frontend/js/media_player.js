@@ -9,6 +9,11 @@
  *     audio track (video is stream-copied when already H.264, so it's cheap).
  * Subtitles (embedded, extracted to WebVTT, or external sidecars) attach as
  * <track> elements. Playback speed applies to both audio and video.
+ *
+ * Video UI is a floating overlay (top bar + bottom control bar) that fades out
+ * during playback: tap = play/pause, double-tap edges = seek ±10s, scrub bar
+ * shows ffmpeg-grabbed thumbnail previews, and a single gear menu consolidates
+ * speed / audio-track / subtitle selection. Audio keeps the card controls.
  */
 class WebMediaPlayer {
   constructor() {
@@ -16,6 +21,7 @@ class WebMediaPlayer {
     this.audioEl = document.getElementById('media-audio-element');
     this.videoContainer = document.getElementById('media-video-container');
     this.audioContainer = document.getElementById('media-audio-container');
+    this.playerCard = this.videoEl ? this.videoEl.closest('.media-player-card') : null;
     this.canvas = document.getElementById('audio-visualizer-canvas');
 
     this.activePlayer = 'audio'; // 'audio' | 'video'
@@ -25,31 +31,55 @@ class WebMediaPlayer {
 
     // Advanced video state
     this.videoRelPath = null;
+    this.videoTitle = '';
     this.mediaInfo = null;
     this.isTranscoded = false;
     this.defaultAudioIdx = 0;
     this.currentAudioIdx = 0;
     this.knownDuration = 0;
     this.baseTime = 0;             // content-time where the current source begins
-    this.currentSubtitle = null;   // {kind:'embedded'|'external', track?, file?, label}
+    this.currentSubtitle = null;   // {kind, track?, file?, label, value}
     this.playbackRate = 1;
     this._pendingPlay = true;
     this._scrubbing = false;       // user is dragging the seek bar
 
+    // Settings-menu data (populated from ffprobe info)
+    this.SPEEDS = [0.5, 0.75, 1, 1.25, 1.5, 1.75, 2];
+    this.audioTracks = [];
+    this.subtitleOptions = [];
+    this.ffmpegHintMsg = '';
+    this._menuView = 'main';
+    this._lastSubValue = null;     // CC toggle restores the last picked track
+
+    // Overlay state
+    this.HIDE_DELAY_MS = 2600;
+    this._hideTimer = null;
+    this._clickTimer = null;       // single vs double tap disambiguation
+    this._scrubFrac = 0;
+    this._thumbCache = new Map();  // second -> object URL (per video)
+    this._thumbPending = null;
+    this._thumbLastReq = 0;
+    this._thumbsDead = false;      // server can't produce frames (no ffmpeg)
+    this._bookmarks = this.loadBookmarks();
+
+    if (this.videoEl) this.videoEl.volume = 0.8;
+    if (this.audioEl) this.audioEl.volume = 0.8;
+
     this.initVisualizer();
     this.bindEvents();
+    this.bindVideoOverlay();
     this.loadMediaLibrary();
   }
 
+  // ------------------------------------------------------------------ events
+
   bindEvents() {
-    // Play/Pause button
+    // Audio card controls
     document.getElementById('media-btn-play')?.addEventListener('click', () => this.togglePlay());
     document.getElementById('media-btn-prev')?.addEventListener('click', () => this.playPrev());
     document.getElementById('media-btn-next')?.addEventListener('click', () => this.playNext());
 
-    // Scrub Bar — preview the time while dragging, commit the seek on release.
-    // (A transcoded stream is re-requested on seek, so we don't want to fire on
-    // every intermediate 'input' event.)
+    // Audio scrub bar — preview while dragging, commit on release.
     const seekBar = document.getElementById('media-seek-bar');
     seekBar?.addEventListener('input', (e) => {
       const dur = this.effectiveDuration();
@@ -65,60 +95,281 @@ class WebMediaPlayer {
       if (dur > 0) this.seekTo((e.target.value / 100) * dur);
     });
 
-    // Volume Bar
-    const volBar = document.getElementById('media-volume-bar');
-    volBar?.addEventListener('input', (e) => {
-      const val = parseFloat(e.target.value);
-      if (this.videoEl) this.videoEl.volume = val;
-      if (this.audioEl) this.audioEl.volume = val;
+    // Audio volume bar (shared with the video element)
+    document.getElementById('media-volume-bar')?.addEventListener('input', (e) => {
+      this.applyVolume(parseFloat(e.target.value));
     });
 
-    // Speed Selector — remembered so it survives a source reload (audio switch)
+    // Audio speed selector — remembered so it survives a source reload
     document.getElementById('media-speed-select')?.addEventListener('change', (e) => {
-      this.playbackRate = parseFloat(e.target.value) || 1;
-      this.applyPlaybackRate();
+      this.setSpeed(parseFloat(e.target.value) || 1);
     });
 
-    // Audio-track selector (video only)
-    document.getElementById('media-audio-track')?.addEventListener('change', (e) => {
-      this.changeAudioTrack(parseInt(e.target.value, 10) || 0);
-    });
-
-    // Subtitle selector (video only)
-    document.getElementById('media-subtitle-select')?.addEventListener('change', (e) => {
-      const opt = e.target.options[e.target.selectedIndex];
-      this.changeSubtitle(e.target.value, opt ? opt.textContent : '');
-    });
-
-    // Refresh Library
-    document.getElementById('media-refresh-btn')?.addEventListener('click', () => this.loadMediaLibrary());
-
-    // Audio & Video Time Updates
+    // Media element events
     [this.videoEl, this.audioEl].forEach(el => {
       if (!el) return;
       el.addEventListener('timeupdate', () => this.updateTime());
       el.addEventListener('ended', () => this.playNext());
     });
+
+    if (this.videoEl) {
+      this.videoEl.addEventListener('play', () => {
+        this.isPlaying = true;
+        this.updatePlayButton();
+        this.pokeControls();
+      });
+      this.videoEl.addEventListener('pause', () => {
+        this.isPlaying = false;
+        this.updatePlayButton();
+        this.pokeControls();
+      });
+    }
+
+    // Refresh Library
+    document.getElementById('media-refresh-btn')?.addEventListener('click', () => this.loadMediaLibrary());
   }
+
+  /** All floating-overlay bindings for video mode. */
+  bindVideoOverlay() {
+    const wrap = this.videoContainer;
+    if (!wrap) return;
+    const on = (id, ev, fn) => document.getElementById(id)?.addEventListener(ev, fn);
+
+    // Top bar
+    on('vp-btn-back', 'click', () => this.goBack());
+    on('vp-btn-bookmark', 'click', () => this.toggleBookmark());
+    on('vp-btn-cast', 'click', () => this.promptCast());
+
+    // Transport
+    on('vp-btn-play', 'click', () => this.togglePlay());
+    on('vp-btn-prev', 'click', () => this.playPrev());
+    on('vp-btn-next', 'click', () => this.playNext());
+    on('vp-btn-mute', 'click', () => this.toggleMute());
+    on('vp-volume', 'input', (e) => this.applyVolume(parseFloat(e.target.value)));
+
+    // Quick settings (right group)
+    on('vp-btn-cc', 'click', () => this.toggleCc());
+    on('vp-btn-speed', 'click', () => this.toggleSettings('speed'));
+    on('vp-btn-settings', 'click', () => this.toggleSettings('main'));
+    on('vp-btn-fullscreen', 'click', () => this.toggleFullscreen());
+
+    // Settings menu (event delegation — contents are re-rendered per view)
+    document.getElementById('vp-menu')?.addEventListener('click', (e) => {
+      const btn = e.target.closest('[data-action]');
+      if (!btn || btn.disabled) return;
+      const { action, value } = btn.dataset;
+      if (action === 'back') this.openSettings('main');
+      else if (action === 'open') this.openSettings(value);
+      else if (action === 'speed') this.setSpeed(parseFloat(value));
+      else if (action === 'audio') this.changeAudioTrack(parseInt(value, 10) || 0);
+      else if (action === 'sub') {
+        this.changeSubtitle(value, btn.querySelector('span')?.textContent || '');
+      }
+    });
+
+    // Auto-hide: any pointer motion over the player re-shows the controls.
+    wrap.addEventListener('pointermove', () => this.pokeControls());
+    wrap.addEventListener('pointerleave', () => {
+      if (this.isPlaying && !this._scrubbing && !this.isMenuOpen()) this.hideControls();
+    });
+
+    this.bindGestures();
+    this.bindSeekBar();
+    this.bindKeyboard();
+
+    document.addEventListener('fullscreenchange', () => this.updateFullscreenIcon());
+  }
+
+  /** Single tap = play/pause; double tap left/right third = seek ±10s,
+   *  double tap center = play/pause (instant, skips the tap delay). */
+  bindGestures() {
+    const gesture = document.getElementById('vp-gesture');
+    if (!gesture) return;
+
+    gesture.addEventListener('click', () => {
+      this.pokeControls();
+      if (this._clickTimer) return; // second click of a double tap — dblclick handles it
+      this._clickTimer = setTimeout(() => {
+        this._clickTimer = null;
+        this.togglePlay();
+      }, 240);
+    });
+
+    gesture.addEventListener('dblclick', (e) => {
+      if (this._clickTimer) {
+        clearTimeout(this._clickTimer);
+        this._clickTimer = null;
+      }
+      const rect = gesture.getBoundingClientRect();
+      const x = (e.clientX - rect.left) / rect.width;
+      if (x < 0.33) this.seekBy(-10);
+      else if (x > 0.67) this.seekBy(10);
+      else this.togglePlay();
+    });
+  }
+
+  /** Custom scrub bar: drag to scrub (commits on release, like the old range
+   *  input — a transcoded stream is re-requested once, not per pixel), plus a
+   *  hover thumbnail preview fed by /api/media/thumb. */
+  bindSeekBar() {
+    const bar = document.getElementById('vp-seek');
+    if (!bar) return;
+
+    const fracFromEvent = (e) => {
+      const r = bar.getBoundingClientRect();
+      return Math.min(1, Math.max(0, (e.clientX - r.left) / r.width));
+    };
+
+    bar.addEventListener('pointerdown', (e) => {
+      if (this.effectiveDuration() <= 0) return;
+      try { bar.setPointerCapture(e.pointerId); } catch (_) {}
+      this._scrubbing = true;
+      this._scrubFrac = fracFromEvent(e);
+      this.videoContainer.classList.add('vp-scrubbing');
+      this.paintScrub(this._scrubFrac);
+      this.labelScrubTime(this._scrubFrac);
+      this.pokeControls();
+    });
+
+    bar.addEventListener('pointermove', (e) => {
+      const f = fracFromEvent(e);
+      if (this._scrubbing) {
+        this._scrubFrac = f;
+        this.paintScrub(f);
+        this.labelScrubTime(f);
+      }
+      this.showPreview(f);
+      this.pokeControls();
+    });
+
+    const endScrub = () => {
+      if (!this._scrubbing) return;
+      this._scrubbing = false;
+      this.videoContainer.classList.remove('vp-scrubbing');
+      const dur = this.effectiveDuration();
+      if (dur > 0) this.seekTo(this._scrubFrac * dur);
+      this.pokeControls();
+    };
+    bar.addEventListener('pointerup', endScrub);
+    bar.addEventListener('pointercancel', endScrub);
+
+    bar.addEventListener('pointerleave', () => {
+      if (!this._scrubbing) this.hidePreview();
+    });
+  }
+
+  /** Player-wide keyboard shortcuts (only while a video is on screen). */
+  bindKeyboard() {
+    window.addEventListener('keydown', (e) => {
+      if (this.activePlayer !== 'video') return;
+      if (!this.videoContainer || this.videoContainer.style.display === 'none') return;
+      const t = e.target;
+      if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' ||
+                t.tagName === 'SELECT' || t.isContentEditable)) return;
+
+      switch (e.key.toLowerCase()) {
+        case ' ':
+        case 'k':
+          e.preventDefault();
+          this.togglePlay();
+          break;
+        case 'arrowleft':
+          e.preventDefault();
+          this.seekBy(-5);
+          break;
+        case 'arrowright':
+          e.preventDefault();
+          this.seekBy(5);
+          break;
+        case 'j':
+          this.seekBy(-10);
+          break;
+        case 'l':
+          this.seekBy(10);
+          break;
+        case 'arrowup':
+          e.preventDefault();
+          this.nudgeVolume(0.05);
+          break;
+        case 'arrowdown':
+          e.preventDefault();
+          this.nudgeVolume(-0.05);
+          break;
+        case 'f':
+          e.preventDefault();
+          this.toggleFullscreen();
+          break;
+        case 'm':
+          this.toggleMute();
+          break;
+        case 'c':
+          this.toggleCc();
+          break;
+        case 'escape':
+          if (this.isMenuOpen()) this.closeSettings();
+          break;
+        default:
+          return;
+      }
+      this.pokeControls();
+    });
+  }
+
+  // ------------------------------------------------------------- core helpers
 
   getActiveElement() {
     return this.activePlayer === 'video' ? this.videoEl : this.audioEl;
   }
 
-  /** Duration to drive the scrub bar: fragmented streams report NaN/Infinity
-   *  until fully buffered, so fall back to the ffprobe duration. */
+  /** Duration that drives the scrub bar.
+   *
+   *  For VIDEO this is always the full-film duration from ffprobe
+   *  (`knownDuration`). A transcoded stream started mid-film (`baseTime > 0`)
+   *  only *contains* the remaining segment, so the <video> element's own
+   *  `duration` is `total − baseTime` — using it would shrink the bar to the
+   *  remaining part and cap forward-seeking to that window (the "0:08 / 0:05"
+   *  bug after switching audio or seeking). Fall back to `baseTime + el.duration`
+   *  only when ffprobe gave us nothing. */
   effectiveDuration() {
     const el = this.getActiveElement();
-    const d = el ? el.duration : 0;
-    if (d && isFinite(d) && d > 0) return d;
-    if (this.activePlayer === 'video' && this.knownDuration > 0) return this.knownDuration;
-    return 0;
+    const elDur = (el && isFinite(el.duration) && el.duration > 0) ? el.duration : 0;
+    if (this.activePlayer === 'video') {
+      if (this.knownDuration > 0) return this.knownDuration;
+      if (elDur > 0) return (this.baseTime || 0) + elDur; // segment length + offset ≈ total
+      return 0;
+    }
+    return elDur;
   }
 
   applyPlaybackRate() {
     if (this.videoEl) this.videoEl.playbackRate = this.playbackRate;
     if (this.audioEl) this.audioEl.playbackRate = this.playbackRate;
   }
+
+  /** Fullscreen the whole player card (video + overlay controls) so the scrub
+   *  bar and settings menu stay usable — the native <video> controls are
+   *  hidden during managed playback. */
+  toggleFullscreen() {
+    if (this.activePlayer !== 'video') return;
+    const target = this.playerCard || this.videoContainer;
+    if (!target) return;
+    const fsEl = document.fullscreenElement || document.webkitFullscreenElement;
+    if (fsEl) {
+      (document.exitFullscreen || document.webkitExitFullscreen || function () {}).call(document);
+    } else {
+      (target.requestFullscreen || target.webkitRequestFullscreen || function () {}).call(target);
+    }
+  }
+
+  updateFullscreenIcon() {
+    const btn = document.getElementById('vp-btn-fullscreen');
+    if (!btn) return;
+    const fs = document.fullscreenElement || document.webkitFullscreenElement;
+    btn.innerHTML = `<i data-lucide="${fs ? 'minimize' : 'maximize'}"></i>`;
+    if (window.lucide) lucide.createIcons();
+  }
+
+  // ----------------------------------------------------------------- library
 
   async loadMediaLibrary() {
     try {
@@ -175,6 +426,8 @@ class WebMediaPlayer {
     this.renderPlaylist();
   }
 
+  // ----------------------------------------------------------- video playback
+
   /**
    * Start video playback. `relPath` (storage-relative) unlocks the advanced
    * ffmpeg features; without it we fall back to a plain direct stream.
@@ -184,6 +437,7 @@ class WebMediaPlayer {
     this.audioEl.pause();
     this.audioContainer.style.display = 'none';
     this.videoContainer.style.display = 'flex';
+    if (this.playerCard) this.playerCard.classList.add('vp-video-mode');
 
     this.videoRelPath = relPath;
     this.videoTitle = title;
@@ -191,20 +445,25 @@ class WebMediaPlayer {
     this.knownDuration = 0;
     this.baseTime = 0;
     this.currentSubtitle = null;
+    this.audioTracks = [];
+    this.subtitleOptions = [];
+    this.ffmpegHintMsg = '';
     this._pendingPlay = true;
+    this._lastSubValue = null;
+    this.resetThumbCache();
 
-    const trackRow = document.getElementById('media-track-row');
+    const titleEl = document.getElementById('vp-title');
+    if (titleEl) titleEl.textContent = title || '';
+    this.videoContainer.classList.remove('vp-native');
+    this.closeSettings();
+    this.updateCcState();
+    this.updateBookmarkState();
+    this.paintScrub(0);
+    this.setOverlayTimes(0, 0);
 
     // No rel path (legacy caller) → simplest possible playback.
     if (!relPath) {
-      if (trackRow) trackRow.style.display = 'none';
-      this.updateFfmpegHint(null);
-      this.isTranscoded = false;
-      this.videoEl.src = url;
-      this.applyPlaybackRate();
-      this.videoEl.play().catch(() => {});
-      this.isPlaying = true;
-      this.updatePlayButton();
+      this.startNativeFallback(url);
       return;
     }
 
@@ -218,7 +477,7 @@ class WebMediaPlayer {
     if (this.videoRelPath !== relPath) return;
 
     this.mediaInfo = info;
-    this.updateFfmpegHint(info);
+    this.ffmpegHintMsg = this.computeFfmpegHint(info);
     if (info && info.ok) {
       this.knownDuration = info.duration || 0;
       const audio = info.audio || [];
@@ -226,24 +485,39 @@ class WebMediaPlayer {
       if (this.defaultAudioIdx < 0) this.defaultAudioIdx = 0;
       this.currentAudioIdx = this.defaultAudioIdx;
 
-      this.populateAudioTracks(info);
-      this.populateSubtitles(info);
-      if (trackRow) trackRow.style.display = 'flex';
+      this.storeTrackData(info);
+      this.setOverlayTimes(0, this.knownDuration);
+
+      // Resume from a saved bookmark (skip it when too close to either end).
+      let startTime = 0;
+      const bm = this._bookmarks[relPath];
+      if (bm && this.knownDuration > 0 && bm > 30 && bm < this.knownDuration - 20) {
+        startTime = bm;
+        this.toast(`Resuming from bookmark at ${this.formatTime(bm)}`);
+      }
 
       // Direct-play only when the container/codecs are browser-native AND we're
       // on the default audio track; otherwise remux/transcode via ffmpeg.
       const useStream = !info.direct_play;
-      this.loadVideoSource({ useStream, audioIdx: this.currentAudioIdx, startTime: 0, autoplay: true });
+      this.loadVideoSource({ useStream, audioIdx: this.currentAudioIdx, startTime, autoplay: true });
     } else {
       // ffprobe unavailable or failed → best-effort direct playback.
-      if (trackRow) trackRow.style.display = 'none';
-      this.isTranscoded = false;
-      this.videoEl.src = url;
-      this.applyPlaybackRate();
-      this.videoEl.play().catch(() => {});
-      this.isPlaying = true;
-      this.updatePlayButton();
+      this.startNativeFallback(url);
     }
+  }
+
+  /** Best-effort playback with the browser's native controls: no ffprobe
+   *  duration means the custom scrub bar can't be trusted, so hand over to the
+   *  <video> element and keep only the overlay top bar (back / title). */
+  startNativeFallback(url) {
+    this.isTranscoded = false;
+    this.videoEl.controls = true;
+    this.videoContainer.classList.add('vp-native');
+    this.videoEl.src = url;
+    this.applyPlaybackRate();
+    this.videoEl.play().catch(() => {});
+    this.isPlaying = true;
+    this.updatePlayButton();
   }
 
   /**
@@ -260,6 +534,14 @@ class WebMediaPlayer {
     const vcodec = (this.mediaInfo && this.mediaInfo.video && this.mediaInfo.video.codec) || '';
     this.isTranscoded = !!useStream;
     const start = startTime > 0 ? startTime : 0;
+
+    // The custom control bar is the single, authoritative scrubber here: it
+    // knows the true film length (knownDuration) and does absolute seeking by
+    // re-requesting the transcode. The browser's native <video controls> bar
+    // only sees the current (possibly mid-film) segment, so showing it too
+    // gives a second, disagreeing timeline that can't fast-forward. Hide it.
+    if (this.videoEl) this.videoEl.controls = false;
+    this.videoContainer.classList.remove('vp-native');
 
     let src, restoreTo;
     if (useStream) {
@@ -283,6 +565,7 @@ class WebMediaPlayer {
       }
       if (shouldPlay) this.videoEl.play().catch(() => {});
       this.updatePlayButton();
+      this.updateTime();
     };
     this.videoEl.addEventListener('loadedmetadata', onMeta);
 
@@ -315,70 +598,165 @@ class WebMediaPlayer {
     }
   }
 
-  populateAudioTracks(info) {
-    const sel = document.getElementById('media-audio-track');
-    if (!sel) return;
-    const audio = info.audio || [];
-    sel.innerHTML = (audio.length ? audio : [{ rel_index: 0, label: 'Default' }])
-      .map(a => `<option value="${a.rel_index}">${a.label}</option>`).join('');
-    sel.value = String(this.currentAudioIdx);
-    sel.disabled = audio.length <= 1;
+  /** Relative seek (gestures / arrow keys) with edge clamping. */
+  seekBy(delta) {
+    if (this.activePlayer !== 'video' || !this.videoEl) return;
+    const dur = this.effectiveDuration();
+    if (dur <= 0) return;
+    const cur = (this.baseTime || 0) + (this.videoEl.currentTime || 0);
+    const t = Math.min(Math.max(0, cur + delta), Math.max(0, dur - 0.5));
+    this.showSeekIndicator(delta < 0 ? 'left' : 'right');
+    this.seekTo(t);
   }
 
-  populateSubtitles(info) {
-    const sel = document.getElementById('media-subtitle-select');
-    const note = document.getElementById('media-track-note');
-    if (!sel) return;
-    const opts = ['<option value="off" selected>Off</option>'];
-    let bitmapCount = 0;
+  // --------------------------------------------------- tracks & settings menu
 
+  /** Turn ffprobe info into the data the settings menu renders from. */
+  storeTrackData(info) {
+    this.audioTracks = info.audio || [];
+
+    const opts = [{ value: 'off', label: 'Off', disabled: false }];
     (info.subtitles || []).forEach(s => {
       if (s.text_based) {
-        opts.push(`<option value="emb:${s.rel_index}">Embedded: ${s.label}</option>`);
+        opts.push({ value: `emb:${s.rel_index}`, label: s.label, disabled: false });
       } else {
-        bitmapCount++;
-        opts.push(`<option value="" disabled>${s.label} (image-based — not selectable)</option>`);
+        opts.push({ value: '', label: `${s.label} (image-based — not selectable)`, disabled: true });
       }
     });
     (info.external_subs || []).forEach(e => {
-      opts.push(`<option value="ext:${encodeURIComponent(e.file)}">External: ${e.label}</option>`);
+      opts.push({ value: `ext:${encodeURIComponent(e.file)}`, label: `External: ${e.label}`, disabled: false });
     });
+    this.subtitleOptions = opts;
 
-    sel.innerHTML = opts.join('');
-    sel.value = 'off';
-    if (note) {
-      note.textContent = bitmapCount
-        ? `${bitmapCount} image-based subtitle track(s) can't be shown as text.`
-        : '';
-    }
+    if (this.isMenuOpen()) this.renderSettingsMenu();
   }
 
   /**
-   * Show a hint when the server lacks ffmpeg/ffprobe, so the missing audio &
-   * subtitle controls are explained rather than silently absent. `info` is the
-   * /api/media/info payload (or null if the request failed / no rel path).
+   * Explain a missing ffmpeg/ffprobe so the absent audio & subtitle options
+   * are surfaced in the settings menu rather than silently missing.
    */
-  updateFfmpegHint(info) {
-    const hint = document.getElementById('media-ffmpeg-hint');
-    const text = document.getElementById('media-ffmpeg-hint-text');
-    if (!hint) return;
-
-    let msg = '';
+  computeFfmpegHint(info) {
     if (info && (info.ffprobe === false || info.ffmpeg === false)) {
-      // Tools genuinely absent — this is the actionable case.
-      msg = 'Install ffmpeg on the server to enable audio-track switching and subtitles.';
-    } else if (info && info.ok === false && info.ffprobe !== false) {
-      // ffprobe is present but couldn't read this file (corrupt / unsupported).
-      msg = "Couldn't read this file's audio/subtitle tracks.";
+      return 'Install ffmpeg on the server to enable audio-track switching and subtitles.';
+    }
+    if (info && info.ok === false && info.ffprobe !== false) {
+      return "Couldn't read this file's audio/subtitle tracks.";
+    }
+    return '';
+  }
+
+  isMenuOpen() {
+    return document.getElementById('vp-menu')?.classList.contains('vp-menu-on') || false;
+  }
+
+  openSettings(view = 'main') {
+    const menu = document.getElementById('vp-menu');
+    if (!menu) return;
+    this._menuView = view;
+    this.renderSettingsMenu();
+    menu.classList.add('vp-menu-on');
+    this.pokeControls();
+  }
+
+  closeSettings() {
+    document.getElementById('vp-menu')?.classList.remove('vp-menu-on');
+    this.pokeControls();
+  }
+
+  toggleSettings(view = 'main') {
+    if (this.isMenuOpen()) this.closeSettings();
+    else this.openSettings(view);
+  }
+
+  renderSettingsMenu() {
+    const menu = document.getElementById('vp-menu');
+    if (!menu) return;
+    const view = this._menuView;
+
+    const head = (title, withBack) => `
+      <div class="vp-menu-head">
+        ${withBack ? '<button class="vp-menu-head-btn" data-action="back" title="Back"><i data-lucide="chevron-left"></i></button>' : ''}
+        <span>${title}</span>
+      </div>`;
+
+    const row = (label, selected, action, value, disabled = false) => `
+      <button class="vp-menu-item ${selected ? 'vp-selected' : ''}" data-action="${action}"
+        data-value="${this.escHtml(value)}" ${disabled ? 'disabled' : ''}>
+        <i data-lucide="check" class="vp-menu-check"></i>
+        <span>${this.escHtml(label)}</span>
+      </button>`;
+
+    const mainRow = (icon, label, value, target) => `
+      <button class="vp-menu-item" data-action="open" data-value="${target}">
+        <i data-lucide="${icon}" class="vp-menu-check" style="visibility: visible; color: var(--text-muted);"></i>
+        <span>${label}</span>
+        <span class="vp-menu-value">${this.escHtml(value)}</span>
+        <i data-lucide="chevron-right" class="vp-menu-caret"></i>
+      </button>`;
+
+    let html = '';
+    if (view === 'main') {
+      const audioLabel = (this.audioTracks.find(a => a.rel_index === this.currentAudioIdx) || {}).label || 'Default';
+      const subLabel = this.currentSubtitle ? (this.currentSubtitle.label || 'On') : 'Off';
+      html += head('Settings', false);
+      html += '<div class="vp-menu-body">';
+      html += mainRow('gauge', 'Playback speed', this.speedLabel(this.playbackRate), 'speed');
+      if (this.audioTracks.length > 1) {
+        html += mainRow('volume-2', 'Audio track', audioLabel, 'audio');
+      }
+      html += mainRow('captions', 'Subtitles', subLabel, 'subs');
+      html += '</div>';
+      if (this.ffmpegHintMsg) {
+        html += `<div class="vp-menu-note">${this.escHtml(this.ffmpegHintMsg)}</div>`;
+      }
+    } else if (view === 'speed') {
+      html += head('Playback speed', true);
+      html += '<div class="vp-menu-body">';
+      for (const s of this.SPEEDS) {
+        html += row(this.speedLabel(s), Math.abs(this.playbackRate - s) < 0.001, 'speed', String(s));
+      }
+      html += '</div>';
+    } else if (view === 'audio') {
+      html += head('Audio track', true);
+      html += '<div class="vp-menu-body">';
+      for (const a of this.audioTracks) {
+        html += row(a.label, a.rel_index === this.currentAudioIdx, 'audio', String(a.rel_index));
+      }
+      html += '</div>';
+    } else if (view === 'subs') {
+      html += head('Subtitles', true);
+      html += '<div class="vp-menu-body">';
+      for (const o of this.subtitleOptions) {
+        const selected = o.value === 'off' ? !this.currentSubtitle
+          : !!this.currentSubtitle && this.currentSubtitle.value === o.value;
+        html += row(o.label, selected, 'sub', o.value, o.disabled);
+      }
+      html += '</div>';
     }
 
-    if (msg) {
-      if (text) text.textContent = msg;
-      hint.style.display = 'flex';
-      if (window.lucide) lucide.createIcons();
-    } else {
-      hint.style.display = 'none';
-    }
+    menu.innerHTML = html;
+    if (window.lucide) lucide.createIcons();
+  }
+
+  escHtml(s) {
+    return String(s).replace(/[&<>"']/g, c => (
+      { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]
+    ));
+  }
+
+  speedLabel(rate) {
+    const r = parseFloat(rate) || 1;
+    return `${Number.isInteger(r) ? r.toFixed(1) : String(r)}x`;
+  }
+
+  setSpeed(rate) {
+    this.playbackRate = rate;
+    this.applyPlaybackRate();
+    const label = document.getElementById('vp-speed-label');
+    if (label) label.textContent = this.speedLabel(rate);
+    const sel = document.getElementById('media-speed-select');
+    if (sel) sel.value = String(rate);
+    if (this.isMenuOpen()) this.renderSettingsMenu();
   }
 
   changeAudioTrack(idx) {
@@ -393,17 +771,41 @@ class WebMediaPlayer {
     const absPos = (this.baseTime || 0) + (this.videoEl.currentTime || 0);
     this._pendingPlay = !this.videoEl.paused;
     this.loadVideoSource({ useStream: !canDirect, audioIdx: idx, startTime: absPos, autoplay: true });
+    if (this.isMenuOpen()) this.renderSettingsMenu();
+  }
+
+  /** CC button: toggle between Off and the last-picked (or first) track. */
+  toggleCc() {
+    const picks = this.subtitleOptions.filter(o => !o.disabled && o.value !== 'off');
+    if (!picks.length) {
+      this.openSettings('subs'); // shows "Off" only, plus any ffmpeg hint
+      return;
+    }
+    if (this.currentSubtitle) {
+      this.changeSubtitle('off');
+    } else {
+      const pick = picks.find(o => o.value === this._lastSubValue) || picks[0];
+      this.changeSubtitle(pick.value, pick.label);
+    }
+  }
+
+  updateCcState() {
+    const btn = document.getElementById('vp-btn-cc');
+    if (btn) btn.classList.toggle('vp-active', !!this.currentSubtitle);
   }
 
   changeSubtitle(value, label = '') {
     if (!value || value === 'off') {
       this.currentSubtitle = null;
     } else if (value.startsWith('emb:')) {
-      this.currentSubtitle = { kind: 'embedded', track: parseInt(value.slice(4), 10) || 0, label };
+      this.currentSubtitle = { kind: 'embedded', track: parseInt(value.slice(4), 10) || 0, label, value };
     } else if (value.startsWith('ext:')) {
-      this.currentSubtitle = { kind: 'external', file: decodeURIComponent(value.slice(4)), label };
+      this.currentSubtitle = { kind: 'external', file: decodeURIComponent(value.slice(4)), label, value };
     }
+    if (this.currentSubtitle) this._lastSubValue = value;
     this.applySubtitle();
+    this.updateCcState();
+    if (this.isMenuOpen()) this.renderSettingsMenu();
   }
 
   /** Clear existing <track>s and attach the currently selected subtitle. */
@@ -436,16 +838,17 @@ class WebMediaPlayer {
     setTimeout(showIt, 300);
   }
 
+  // ----------------------------------------------------------- audio playback
+
   playAudio(url, title) {
     this.activePlayer = 'audio';
     this.videoEl.pause();
     this.videoContainer.style.display = 'none';
     this.audioContainer.style.display = 'flex';
+    if (this.playerCard) this.playerCard.classList.remove('vp-video-mode');
     this.isTranscoded = false;
     this.baseTime = 0;
-    const trackRow = document.getElementById('media-track-row');
-    if (trackRow) trackRow.style.display = 'none';
-    this.updateFfmpegHint(null);
+    this.closeSettings();
 
     document.getElementById('audio-current-title').textContent = title || 'Streaming Audio';
     this.audioEl.src = url;
@@ -467,6 +870,8 @@ class WebMediaPlayer {
     }
   }
 
+  // ------------------------------------------------------- transport controls
+
   togglePlay() {
     const el = this.getActiveElement();
     if (!el || !el.src) {
@@ -481,6 +886,9 @@ class WebMediaPlayer {
       this.isPlaying = false;
     }
     this.updatePlayButton();
+    if (this.activePlayer === 'video') {
+      this.flashIcon(this.isPlaying ? 'play' : 'pause');
+    }
   }
 
   playNext() {
@@ -497,10 +905,268 @@ class WebMediaPlayer {
     }
   }
 
-  updatePlayButton() {
-    const btn = document.getElementById('media-btn-play');
+  /** Back arrow: leave the media view for wherever playback was opened from. */
+  goBack() {
+    const el = this.getActiveElement();
+    if (el) el.pause();
+    const target = (window.app && app.previousView && app.previousView !== 'media')
+      ? app.previousView
+      : 'files';
+    if (window.app) app.switchView(target);
+  }
+
+  // ------------------------------------------------------------- volume/mute
+
+  applyVolume(val) {
+    val = Math.min(1, Math.max(0, isNaN(val) ? 0.8 : val));
+    if (this.videoEl) { this.videoEl.volume = val; this.videoEl.muted = val === 0; }
+    if (this.audioEl) { this.audioEl.volume = val; this.audioEl.muted = val === 0; }
+    this.syncVolumeUI();
+  }
+
+  nudgeVolume(delta) {
+    const v = this.videoEl;
+    if (!v) return;
+    this.applyVolume((v.muted ? 0 : v.volume) + delta);
+  }
+
+  toggleMute() {
+    const v = this.videoEl;
+    if (!v) return;
+    if (v.muted || v.volume === 0) {
+      v.muted = false;
+      if (this.audioEl) this.audioEl.muted = false;
+      if (v.volume === 0) this.applyVolume(0.5);
+    } else {
+      v.muted = true;
+      if (this.audioEl) this.audioEl.muted = true;
+    }
+    this.syncVolumeUI();
+  }
+
+  syncVolumeUI() {
+    const v = this.videoEl;
+    if (!v) return;
+    const muted = v.muted || v.volume === 0;
+    const icon = muted ? 'volume-x' : (v.volume < 0.5 ? 'volume-1' : 'volume-2');
+    const btn = document.getElementById('vp-btn-mute');
+    if (btn) btn.innerHTML = `<i data-lucide="${icon}"></i>`;
+    const shown = muted ? 0 : v.volume;
+    const vpVol = document.getElementById('vp-volume');
+    if (vpVol) vpVol.value = shown;
+    const audioVol = document.getElementById('media-volume-bar');
+    if (audioVol) audioVol.value = shown;
+    if (window.lucide) lucide.createIcons();
+  }
+
+  // -------------------------------------------------------------- bookmarks
+
+  loadBookmarks() {
+    try {
+      return JSON.parse(localStorage.getItem('diskpulse_video_bookmarks')) || {};
+    } catch (_) {
+      return {};
+    }
+  }
+
+  saveBookmarks() {
+    try {
+      localStorage.setItem('diskpulse_video_bookmarks', JSON.stringify(this._bookmarks));
+    } catch (_) {}
+  }
+
+  /** Bookmark button: save the current position, or clear it if already set. */
+  toggleBookmark() {
+    if (!this.videoRelPath) return;
+    const path = this.videoRelPath;
+    if (this._bookmarks[path]) {
+      delete this._bookmarks[path];
+      this.saveBookmarks();
+      this.toast('Bookmark removed');
+    } else {
+      const t = (this.baseTime || 0) + (this.videoEl.currentTime || 0);
+      if (t < 5) {
+        this.toast('Play a little further before bookmarking');
+        return;
+      }
+      this._bookmarks[path] = Math.floor(t);
+      this.saveBookmarks();
+      this.toast(`Bookmarked at ${this.formatTime(t)}`);
+    }
+    this.updateBookmarkState();
+  }
+
+  updateBookmarkState() {
+    const btn = document.getElementById('vp-btn-bookmark');
     if (!btn) return;
-    btn.innerHTML = this.isPlaying ? '<i data-lucide="pause"></i>' : '<i data-lucide="play"></i>';
+    const has = !!(this.videoRelPath && this._bookmarks[this.videoRelPath]);
+    btn.classList.toggle('vp-active', has);
+    btn.innerHTML = `<i data-lucide="${has ? 'bookmark-check' : 'bookmark'}"></i>`;
+    if (window.lucide) lucide.createIcons();
+  }
+
+  /** Cast via the Remote Playback API when the browser offers it. */
+  promptCast() {
+    const v = this.videoEl;
+    if (v && v.remote && typeof v.remote.prompt === 'function') {
+      v.remote.prompt().catch(() => {});
+    } else {
+      this.toast('Casting is not supported in this browser');
+    }
+  }
+
+  toast(msg) {
+    if (window.fileManager && typeof fileManager.showToast === 'function') {
+      fileManager.showToast(msg);
+    }
+  }
+
+  // ------------------------------------------------------- overlay auto-hide
+
+  pokeControls() {
+    if (!this.videoContainer) return;
+    this.videoContainer.classList.remove('vp-hidden', 'vp-cursor-hidden');
+    clearTimeout(this._hideTimer);
+    if (this.isPlaying && !this._scrubbing && !this.isMenuOpen()) {
+      this._hideTimer = setTimeout(() => this.hideControls(), this.HIDE_DELAY_MS);
+    }
+  }
+
+  hideControls() {
+    if (!this.isPlaying || this._scrubbing || this.isMenuOpen()) return;
+    this.videoContainer.classList.add('vp-hidden', 'vp-cursor-hidden');
+  }
+
+  // -------------------------------------------------------- visual feedback
+
+  /** Transient center play/pause flash (YouTube-style). */
+  flashIcon(name) {
+    const flash = document.getElementById('vp-flash');
+    if (!flash) return;
+    flash.innerHTML = `<i data-lucide="${name}"></i>`;
+    if (window.lucide) lucide.createIcons();
+    flash.classList.remove('vp-flash-on');
+    void flash.offsetWidth; // restart the animation
+    flash.classList.add('vp-flash-on');
+  }
+
+  showSeekIndicator(side) {
+    const el = document.getElementById(side === 'left' ? 'vp-ind-left' : 'vp-ind-right');
+    if (!el) return;
+    el.classList.remove('vp-ind-on');
+    void el.offsetWidth;
+    el.classList.add('vp-ind-on');
+  }
+
+  // ------------------------------------------------------- scrub bar & times
+
+  paintScrub(frac) {
+    const pct = `${(Math.min(1, Math.max(0, frac)) * 100).toFixed(3)}%`;
+    const fill = document.getElementById('vp-seek-fill');
+    const thumb = document.getElementById('vp-seek-thumb');
+    if (fill) fill.style.width = pct;
+    if (thumb) thumb.style.left = pct;
+  }
+
+  labelScrubTime(frac) {
+    const dur = this.effectiveDuration();
+    const curEl = document.getElementById('vp-cur');
+    if (curEl && dur > 0) curEl.textContent = this.formatTime(frac * dur);
+  }
+
+  setOverlayTimes(cur, dur) {
+    const curEl = document.getElementById('vp-cur');
+    const durEl = document.getElementById('vp-dur');
+    if (curEl) curEl.textContent = this.formatTime(cur);
+    if (durEl) durEl.textContent = this.formatTime(dur);
+  }
+
+  /** Hover preview bubble: time label always, ffmpeg frame when available. */
+  showPreview(frac) {
+    const preview = document.getElementById('vp-preview');
+    const bar = document.getElementById('vp-seek');
+    const dur = this.effectiveDuration();
+    if (!preview || !bar || dur <= 0) return;
+
+    const t = frac * dur;
+    const timeEl = document.getElementById('vp-preview-time');
+    if (timeEl) timeEl.textContent = this.formatTime(t);
+
+    // Clamp the bubble inside the bar's width.
+    preview.classList.add('vp-preview-on');
+    const barW = bar.getBoundingClientRect().width;
+    const pw = preview.offsetWidth || 172;
+    const x = Math.max(pw / 2 + 2, Math.min(barW - pw / 2 - 2, frac * barW));
+    preview.style.left = `${x}px`;
+
+    this.requestThumb(t);
+  }
+
+  hidePreview() {
+    document.getElementById('vp-preview')?.classList.remove('vp-preview-on');
+    this._thumbPending = null;
+  }
+
+  /** Fetch (and cache per second) a preview frame; degrade gracefully to a
+   *  time-only bubble when the server can't produce frames. */
+  requestThumb(t) {
+    if (!this.videoRelPath || this._thumbsDead) return;
+    const key = Math.round(t);
+    const img = document.getElementById('vp-preview-img');
+    const preview = document.getElementById('vp-preview');
+    if (!img || !preview) return;
+
+    if (this._thumbCache.has(key)) {
+      img.src = this._thumbCache.get(key);
+      preview.classList.remove('vp-preview-noimg');
+      return;
+    }
+
+    if (this._thumbPending === key) return;
+    const now = performance.now();
+    if (now - this._thumbLastReq < 120) return; // throttle while sliding
+    this._thumbLastReq = now;
+    this._thumbPending = key;
+
+    fetch(api.getMediaThumbUrl(this.videoRelPath, key))
+      .then(r => {
+        if (!r.ok) throw new Error(`thumb ${r.status}`);
+        return r.blob();
+      })
+      .then(blob => {
+        if (this._thumbPending !== key) return; // user already moved on
+        const url = URL.createObjectURL(blob);
+        this._thumbCache.set(key, url);
+        if (this._thumbCache.size > 60) {
+          const [oldKey, oldUrl] = this._thumbCache.entries().next().value;
+          this._thumbCache.delete(oldKey);
+          URL.revokeObjectURL(oldUrl);
+        }
+        img.src = url;
+        preview.classList.remove('vp-preview-noimg');
+      })
+      .catch(() => {
+        this._thumbsDead = true;
+        preview.classList.add('vp-preview-noimg');
+      });
+  }
+
+  resetThumbCache() {
+    for (const url of this._thumbCache.values()) URL.revokeObjectURL(url);
+    this._thumbCache.clear();
+    this._thumbPending = null;
+    this._thumbsDead = false;
+    this.hidePreview();
+  }
+
+  // ------------------------------------------------------------ UI sync
+
+  updatePlayButton() {
+    const icon = this.isPlaying ? 'pause' : 'play';
+    for (const id of ['media-btn-play', 'vp-btn-play']) {
+      const btn = document.getElementById(id);
+      if (btn) btn.innerHTML = `<i data-lucide="${icon}"></i>`;
+    }
     if (window.lucide) lucide.createIcons();
   }
 
@@ -513,14 +1179,18 @@ class WebMediaPlayer {
     const cur = base + (el.currentTime || 0);
     const dur = this.effectiveDuration();
 
+    // Audio card controls
     const curEl = document.getElementById('media-current-time');
     const durEl = document.getElementById('media-duration');
     const seekBar = document.getElementById('media-seek-bar');
-
     if (curEl) curEl.textContent = this.formatTime(cur);
     if (durEl) durEl.textContent = this.formatTime(dur);
-    if (seekBar && dur > 0) {
-      seekBar.value = (cur / dur) * 100;
+    if (seekBar && dur > 0) seekBar.value = (cur / dur) * 100;
+
+    // Video overlay
+    if (this.activePlayer === 'video') {
+      this.setOverlayTimes(cur, dur);
+      this.paintScrub(dur > 0 ? cur / dur : 0);
     }
   }
 

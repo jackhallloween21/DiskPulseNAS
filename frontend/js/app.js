@@ -4,6 +4,7 @@
 class DiskPulseApp {
   constructor() {
     this.currentView = 'dashboard';
+    this.previousView = null;
     this.bindGlobalEvents();
     this.init();
   }
@@ -65,6 +66,9 @@ class DiskPulseApp {
   }
 
   switchView(viewName) {
+    if (viewName !== this.currentView) {
+      this.previousView = this.currentView;
+    }
     this.currentView = viewName;
 
     // Update Nav Sidebar

@@ -321,6 +321,38 @@ def shift_vtt(data: bytes, offset_seconds: float) -> bytes:
     return result.encode("utf-8")
 
 
+# ---- scrub-bar thumbnail previews ------------------------------------------
+
+def grab_thumbnail(abs_path: str, t: float, width: int = 200) -> Optional[bytes]:
+    """Extract a single JPEG frame at ``t`` seconds for seek-bar hover previews.
+
+    Uses input-side seeking (``-ss`` before ``-i``) so the grab is fast even on
+    long films, and scales down to ``width`` (height keeps aspect, rounded to an
+    even number) so each preview is only a few KB.
+    """
+    if not has_ffmpeg():
+        return None
+    width = max(96, min(int(width or 200), 480))
+    start = max(0.0, float(t or 0.0))
+    cmd = [
+        "ffmpeg", "-hide_banner", "-loglevel", "error",
+        "-ss", f"{start:.3f}",
+        "-i", abs_path,
+        "-frames:v", "1",
+        "-vf", f"scale={width}:-2",
+        "-q:v", "5",
+        "-f", "image2", "-c:v", "mjpeg",
+        "pipe:1",
+    ]
+    try:
+        out = subprocess.run(cmd, capture_output=True, timeout=30)
+    except (subprocess.TimeoutExpired, OSError):
+        return None
+    if out.returncode != 0 or not out.stdout:
+        return None
+    return out.stdout
+
+
 # ---- transcoding / remuxing ----------------------------------------------
 
 def build_transcode_cmd(

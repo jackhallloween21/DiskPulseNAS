@@ -150,11 +150,26 @@ async def rename_file(req: RenameRequest):
 
 @app.post("/api/files/move")
 async def move_files(req: MoveCopyRequest):
-    return file_manager.move_items(req.source_paths, req.target_folder)
+    # Returns immediately with an op_id; the actual move runs on a worker
+    # thread and reports live progress via /api/files/operation/{op_id}.
+    res = file_manager.start_move(req.source_paths, req.target_folder)
+    if not res.get("success"):
+        raise HTTPException(status_code=400, detail=res.get("error"))
+    return res
 
 @app.post("/api/files/copy")
 async def copy_files(req: MoveCopyRequest):
-    return file_manager.copy_items(req.source_paths, req.target_folder)
+    res = file_manager.start_copy(req.source_paths, req.target_folder)
+    if not res.get("success"):
+        raise HTTPException(status_code=400, detail=res.get("error"))
+    return res
+
+@app.get("/api/files/operation/{op_id}")
+async def get_file_operation(op_id: str):
+    state = file_manager.get_transfer_status(op_id)
+    if state is None:
+        raise HTTPException(status_code=404, detail="Unknown or expired operation")
+    return state
 
 @app.post("/api/files/delete")
 async def delete_files(req: DeleteRequest):
@@ -352,6 +367,26 @@ async def media_info(path: str):
     info["ffmpeg"] = has_ffmpeg()
     info["ffprobe"] = has_ffprobe()
     return info
+
+
+@app.get("/api/media/thumb")
+async def media_thumb(path: str, t: float = 0.0, w: int = 200):
+    """Return a small JPEG frame at ``t`` seconds — powers the scrub-bar hover preview."""
+    from backend.media_service import grab_thumbnail, has_ffmpeg
+
+    if not has_ffmpeg():
+        raise HTTPException(status_code=503, detail="ffmpeg is not installed on the server.")
+
+    target = file_manager._resolve_safe_path(path)
+    if not target.exists() or not target.is_file():
+        raise HTTPException(status_code=404, detail="File not found")
+
+    loop = asyncio.get_event_loop()
+    img = await loop.run_in_executor(None, grab_thumbnail, str(target), t, w)
+    if not img:
+        raise HTTPException(status_code=422, detail="Could not extract a frame at this position.")
+    return Response(content=img, media_type="image/jpeg",
+                    headers={"Cache-Control": "private, max-age=3600"})
 
 
 @app.get("/api/media/subtitle")

@@ -5,6 +5,8 @@ import zipfile
 import tempfile
 import io
 import time
+import threading
+import uuid
 from pathlib import Path
 from typing import List, Optional, Dict, Any
 import humanize
@@ -20,6 +22,10 @@ class FileManager:
             root_dir = _config.STORAGE_ROOT
         self.root_dir = Path(root_dir).resolve()
         self.root_dir.mkdir(parents=True, exist_ok=True)
+
+        # Background move/copy registry: op_id -> live progress state.
+        self._operations: Dict[str, Dict[str, Any]] = {}
+        self._op_lock = threading.Lock()
 
     def set_root(self, new_root_dir: str) -> None:
         """Repoint this (singleton) FileManager at a new storage root.
@@ -231,56 +237,235 @@ class FileManager:
         except Exception as e:
             return {"success": False, "error": str(e)}
 
-    def move_items(self, source_rel_paths: List[str], dest_rel_folder: str) -> Dict[str, Any]:
+    # ---- Background move / copy with live progress ----
+    # The old synchronous move/copy ran inside the request handler, which
+    # blocked the FastAPI event loop (freezing telemetry and the whole UI)
+    # for the entire transfer and only reported pass/fail at the very end.
+    # Transfers now run on a worker thread; the API returns an op_id that
+    # the frontend polls via get_transfer_status().
+
+    # 4 MiB per read/write: good throughput while keeping progress updates
+    # frequent enough to feel live even on slow disks.
+    _COPY_CHUNK = 4 * 1024 * 1024
+
+    def start_move(self, source_rel_paths: List[str], dest_rel_folder: str) -> Dict[str, Any]:
+        return self._start_transfer("move", source_rel_paths, dest_rel_folder)
+
+    def start_copy(self, source_rel_paths: List[str], dest_rel_folder: str) -> Dict[str, Any]:
+        return self._start_transfer("copy", source_rel_paths, dest_rel_folder)
+
+    def get_transfer_status(self, op_id: str) -> Optional[Dict[str, Any]]:
+        with self._op_lock:
+            state = self._operations.get(op_id)
+            if state is None:
+                return None
+            snapshot = dict(state)
+            snapshot["completed"] = list(state["completed"])
+            snapshot["errors"] = list(state["errors"])
+        return snapshot
+
+    def _start_transfer(self, op_type: str, source_rel_paths: List[str], dest_rel_folder: str) -> Dict[str, Any]:
         dest_folder = self._resolve_safe_path(dest_rel_folder)
         if not dest_folder.exists() or not dest_folder.is_dir():
             return {"success": False, "error": "Target destination folder not found"}
 
-        moved = []
+        items = []
         errors = []
         for src in source_rel_paths:
             src_target = self._resolve_safe_path(src)
             if not src_target.exists():
                 errors.append(f"Source {src} not found")
                 continue
-            if src_target == dest_folder or dest_folder.is_relative_to(src_target):
+            if op_type == "move" and (src_target == dest_folder or dest_folder.is_relative_to(src_target)):
                 errors.append(f"Cannot move {src} into itself")
                 continue
+            items.append((src, src_target))
+
+        if not items:
+            return {"success": False, "error": "; ".join(errors) or "No valid source items"}
+
+        op_id = uuid.uuid4().hex[:12]
+        state = {
+            "op_id": op_id,
+            "type": op_type,
+            "status": "running",       # running | done | error
+            "total_bytes": 0,
+            "transferred_bytes": 0,
+            "total_files": 0,
+            "done_files": 0,
+            "total_items": len(items),
+            "done_items": 0,
+            "current_item": "",        # top-level source being processed
+            "current_file": "",        # file inside it currently in flight
+            "completed": [],
+            "errors": errors,
+            "started_at": time.time(),
+            "finished_at": None,
+        }
+        with self._op_lock:
+            self._operations[op_id] = state
+            # Keep the registry bounded; evict oldest finished ops first.
+            if len(self._operations) > 24:
+                running = {k for k, v in self._operations.items() if v["status"] == "running"}
+                for key, _ in sorted(self._operations.items(), key=lambda kv: kv[1]["started_at"]):
+                    if len(self._operations) <= 24 or key in running:
+                        continue
+                    del self._operations[key]
+
+        thread = threading.Thread(
+            target=self._run_transfer, args=(op_id, items, dest_folder),
+            name=f"transfer-{op_type}-{op_id}", daemon=True,
+        )
+        thread.start()
+        return {"success": True, "op_id": op_id}
+
+    def _run_transfer(self, op_id: str, items: List, dest_folder: Path) -> None:
+        with self._op_lock:
+            state = self._operations[op_id]
+        op_type = state["type"]
+        try:
+            # Scan sizes up front so the UI can render a real percentage.
+            total_bytes, total_files = self._scan_totals([src for _, src in items])
+            with self._op_lock:
+                state["total_bytes"] = total_bytes
+                state["total_files"] = total_files
+
+            for src_rel, src_target in items:
+                with self._op_lock:
+                    state["current_item"] = src_rel
+                    state["current_file"] = ""
+                try:
+                    dest_file = dest_folder / src_target.name
+                    if op_type == "move":
+                        self._move_item_tracked(src_target, dest_file, state)
+                    else:
+                        if dest_file.exists():
+                            dest_file = dest_folder / f"Copy_of_{src_target.name}"
+                        if src_target.is_dir():
+                            self._copy_tree_tracked(src_target, dest_file, state)
+                        else:
+                            with self._op_lock:
+                                state["current_file"] = src_target.name
+                            self._copy_file_tracked(src_target, dest_file, state)
+                    with self._op_lock:
+                        state["completed"].append(src_rel)
+                except Exception as e:
+                    with self._op_lock:
+                        state["errors"].append(f"Failed to {op_type} {src_rel}: {str(e)}")
+                with self._op_lock:
+                    state["done_items"] += 1
+
+            with self._op_lock:
+                state["status"] = "done"
+        except Exception as e:
+            with self._op_lock:
+                state["errors"].append(str(e))
+                state["status"] = "error"
+        finally:
+            with self._op_lock:
+                state["current_item"] = ""
+                state["current_file"] = ""
+                state["finished_at"] = time.time()
+
+    def _scan_totals(self, paths: List[Path]) -> tuple:
+        total_bytes = 0
+        total_files = 0
+        for p in paths:
             try:
-                dest_file = dest_folder / src_target.name
-                shutil.move(str(src_target), str(dest_file))
-                moved.append(src)
-            except Exception as e:
-                errors.append(f"Failed to move {src}: {str(e)}")
+                if p.is_file():
+                    total_bytes += p.stat().st_size
+                    total_files += 1
+                elif p.is_dir():
+                    for root, _, files in os.walk(p):
+                        for name in files:
+                            try:
+                                total_bytes += (Path(root) / name).stat().st_size
+                                total_files += 1
+                            except OSError:
+                                pass
+            except OSError:
+                pass
+        return total_bytes, total_files
 
-        return {"success": len(moved) > 0, "moved": moved, "errors": errors}
+    def _copy_file_tracked(self, src: Path, dst: Path, state: Dict[str, Any]) -> None:
+        with open(src, "rb") as fsrc, open(dst, "wb") as fdst:
+            while True:
+                chunk = fsrc.read(self._COPY_CHUNK)
+                if not chunk:
+                    break
+                fdst.write(chunk)
+                with self._op_lock:
+                    state["transferred_bytes"] += len(chunk)
+        try:
+            shutil.copystat(src, dst)
+        except OSError:
+            pass
+        with self._op_lock:
+            state["done_files"] += 1
 
-    def copy_items(self, source_rel_paths: List[str], dest_rel_folder: str) -> Dict[str, Any]:
-        dest_folder = self._resolve_safe_path(dest_rel_folder)
-        if not dest_folder.exists() or not dest_folder.is_dir():
-            return {"success": False, "error": "Target destination folder not found"}
+    def _copy_tree_tracked(self, src: Path, dst: Path, state: Dict[str, Any]) -> None:
+        dst.mkdir(parents=True, exist_ok=True)
+        for entry in os.scandir(src):
+            child = Path(entry.path)
+            target = dst / entry.name
+            if entry.is_dir():
+                self._copy_tree_tracked(child, target, state)
+            else:
+                with self._op_lock:
+                    state["current_file"] = entry.name
+                self._copy_file_tracked(child, target, state)
+        try:
+            shutil.copystat(src, dst)
+        except OSError:
+            pass
 
-        copied = []
-        errors = []
-        for src in source_rel_paths:
-            src_target = self._resolve_safe_path(src)
-            if not src_target.exists():
-                errors.append(f"Source {src} not found")
-                continue
-            try:
-                dest_file = dest_folder / src_target.name
-                if dest_file.exists():
-                    dest_file = dest_folder / f"Copy_of_{src_target.name}"
-                
-                if src_target.is_dir():
-                    shutil.copytree(str(src_target), str(dest_file))
-                else:
-                    shutil.copy2(str(src_target), str(dest_file))
-                copied.append(src)
-            except Exception as e:
-                errors.append(f"Failed to copy {src}: {str(e)}")
+    def _move_item_tracked(self, src: Path, dst: Path, state: Dict[str, Any]) -> None:
+        # shutil.move semantics: moving onto an existing directory moves into it.
+        if dst.exists() and dst.is_dir():
+            dst = dst / src.name
 
-        return {"success": len(copied) > 0, "copied": copied, "errors": errors}
+        # Same volume: metadata-only rename, instant regardless of size.
+        try:
+            os.rename(src, dst)
+        except OSError:
+            pass
+        else:
+            self._account_item_bytes(dst, state)
+            return
+
+        # Cross-device (or a Windows name collision): copy with progress,
+        # then delete the source.
+        if src.is_dir():
+            self._copy_tree_tracked(src, dst, state)
+            shutil.rmtree(src)
+        else:
+            with self._op_lock:
+                state["current_file"] = src.name
+            self._copy_file_tracked(src, dst, state)
+            os.unlink(src)
+
+    def _account_item_bytes(self, path: Path, state: Dict[str, Any]) -> None:
+        """Count a same-volume rename as fully transferred: it moved no data,
+        but the progress bar should still reach 100%."""
+        total_bytes = 0
+        total_files = 0
+        try:
+            if path.is_file():
+                total_bytes = path.stat().st_size
+                total_files = 1
+            elif path.is_dir():
+                for root, _, files in os.walk(path):
+                    for name in files:
+                        try:
+                            total_bytes += (Path(root) / name).stat().st_size
+                            total_files += 1
+                        except OSError:
+                            pass
+        except OSError:
+            pass
+        with self._op_lock:
+            state["transferred_bytes"] += total_bytes
+            state["done_files"] += total_files
 
     def delete_items(self, rel_paths: List[str]) -> Dict[str, Any]:
         deleted = []

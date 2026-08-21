@@ -9,6 +9,14 @@ class FileManagerView {
     this.viewMode = 'grid'; // 'grid' | 'list'
     this.editingFilePath = null;
 
+    // Rename + move/copy destination-picker state
+    this.renameTargetPath = null;
+    this.renameOldName = null;
+    this.destMode = null;      // 'move' | 'copy'
+    this.destSources = [];     // relative paths being moved/copied
+    this.destPath = "";        // folder currently browsed in the picker
+    this.activeTransfer = null; // op_id of the transfer currently being tracked
+
     this.bindEvents();
   }
 
@@ -42,7 +50,7 @@ class FileManagerView {
         app.closeModal('modal-new-folder');
         this.refresh();
       } catch (err) {
-        alert(err.message);
+        this.showToast(err.message);
       }
     });
 
@@ -66,7 +74,7 @@ class FileManagerView {
         } else {
           const fname = document.getElementById('editor-filename').value.trim();
           if (!fname) {
-            alert('File name cannot be empty');
+            this.showToast('File name cannot be empty');
             return;
           }
           await api.createFile(this.currentPath, fname, content);
@@ -74,7 +82,7 @@ class FileManagerView {
         app.closeModal('modal-file-editor');
         this.refresh();
       } catch (err) {
-        alert(err.message);
+        this.showToast(err.message);
       }
     });
 
@@ -87,16 +95,36 @@ class FileManagerView {
     // Bulk Delete
     document.getElementById('fm-bulk-delete')?.addEventListener('click', async () => {
       const count = this.selectedPaths.size;
-      if (!count || !confirm(`Permanently delete ${count} selected item(s)?`)) return;
+      if (!count) return;
+      const ok = await this.confirmModal({
+        title: 'Delete items',
+        message: `Permanently delete ${count} selected item${count > 1 ? 's' : ''}? This cannot be undone.`,
+        confirmLabel: 'Delete',
+        danger: true,
+      });
+      if (!ok) return;
       try {
         await api.deleteFiles(Array.from(this.selectedPaths));
         this.selectedPaths.clear();
         this.updateBulkBar();
         this.refresh();
       } catch (err) {
-        alert(err.message);
+        this.showToast(err.message);
       }
     });
+
+    // Bulk Move / Copy → open destination picker
+    document.getElementById('fm-bulk-move')?.addEventListener('click', () => this.openDestPicker('move'));
+    document.getElementById('fm-bulk-copy')?.addEventListener('click', () => this.openDestPicker('copy'));
+
+    // Rename modal submit (button + Enter key)
+    document.getElementById('modal-rename-submit')?.addEventListener('click', () => this.submitRename());
+    document.getElementById('modal-rename-input')?.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') { e.preventDefault(); this.submitRename(); }
+    });
+
+    // Destination picker confirm ("Move here" / "Copy here")
+    document.getElementById('dest-picker-confirm')?.addEventListener('click', () => this.confirmDest());
 
     // Bulk Zip Download
     document.getElementById('fm-bulk-zip')?.addEventListener('click', () => {
@@ -393,24 +421,353 @@ class FileManagerView {
     }, 3200);
   }
 
-  async promptRename(path, oldName) {
-    const newName = prompt("Rename item:", oldName);
-    if (!newName || newName === oldName) return;
+  /** Open the styled rename modal, pre-filled with the current name. */
+  promptRename(path, oldName) {
+    this.renameTargetPath = path;
+    this.renameOldName = oldName;
+    const input = document.getElementById('modal-rename-input');
+    if (input) input.value = oldName;
+    app.openModal('modal-rename');
+    // Focus and select just the base name (before the extension) for quick edits.
+    setTimeout(() => {
+      if (!input) return;
+      input.focus();
+      const dot = oldName.lastIndexOf('.');
+      if (dot > 0) input.setSelectionRange(0, dot);
+      else input.select();
+    }, 60);
+    if (window.lucide) lucide.createIcons();
+  }
+
+  async submitRename() {
+    const input = document.getElementById('modal-rename-input');
+    const newName = (input?.value || '').trim();
+    if (!newName || newName === this.renameOldName) {
+      app.closeModal('modal-rename');
+      return;
+    }
     try {
-      await api.renameFile(path, newName);
+      await api.renameFile(this.renameTargetPath, newName);
+      app.closeModal('modal-rename');
+      this.showToast(`Renamed to "${newName}".`);
       this.refresh();
     } catch (err) {
-      alert(err.message);
+      this.showToast(err.message);
     }
   }
 
   async deleteSingle(path, name) {
-    if (!confirm(`Delete "${name}"?`)) return;
+    const ok = await this.confirmModal({
+      title: 'Delete item',
+      message: `Permanently delete "${name}"? This cannot be undone.`,
+      confirmLabel: 'Delete',
+      danger: true,
+    });
+    if (!ok) return;
     try {
       await api.deleteFiles([path]);
+      this.showToast(`Deleted "${name}".`);
       this.refresh();
     } catch (err) {
-      alert(err.message);
+      this.showToast(err.message);
+    }
+  }
+
+  // ---- Styled confirm modal (Promise-based replacement for window.confirm) ----
+
+  /**
+   * Show the generic confirm modal and resolve true/false. Any dismissal
+   * (Cancel, the X, backdrop click, Escape) resolves false so callers never
+   * hang. Falls back to window.confirm if the modal markup is missing.
+   */
+  confirmModal({ title = 'Confirm', message = 'Are you sure?', confirmLabel = 'Confirm', danger = true } = {}) {
+    return new Promise((resolve) => {
+      const modal = document.getElementById('modal-confirm');
+      const okBtn = document.getElementById('confirm-ok-btn');
+      const cancelBtn = document.getElementById('confirm-cancel-btn');
+      if (!modal || !okBtn || !cancelBtn) { resolve(window.confirm(message)); return; }
+
+      const titleEl = document.getElementById('confirm-title');
+      const msgEl = document.getElementById('confirm-message');
+      const okLabel = document.getElementById('confirm-ok-label');
+      if (titleEl) titleEl.innerHTML = `<i data-lucide="alert-triangle"></i> ${title}`;
+      if (msgEl) msgEl.textContent = message;
+      if (okLabel) okLabel.textContent = confirmLabel;
+      okBtn.className = danger ? 'btn btn-danger' : 'btn btn-primary';
+
+      const xBtn = modal.querySelector('.modal-header .modal-close');
+      let done = false;
+      const cleanup = (result) => {
+        if (done) return;
+        done = true;
+        okBtn.removeEventListener('click', onOk);
+        cancelBtn.removeEventListener('click', onCancel);
+        if (xBtn) xBtn.removeEventListener('click', onCancel);
+        modal.removeEventListener('click', onBackdrop);
+        document.removeEventListener('keydown', onKey);
+        modal.classList.remove('active');
+        resolve(result);
+      };
+      const onOk = () => cleanup(true);
+      const onCancel = () => cleanup(false);
+      const onBackdrop = (e) => { if (e.target === modal) cleanup(false); };
+      const onKey = (e) => { if (e.key === 'Escape') cleanup(false); };
+
+      okBtn.addEventListener('click', onOk);
+      cancelBtn.addEventListener('click', onCancel);
+      if (xBtn) xBtn.addEventListener('click', onCancel);
+      modal.addEventListener('click', onBackdrop);
+      document.addEventListener('keydown', onKey);
+
+      modal.classList.add('active');
+      if (window.lucide) lucide.createIcons();
+    });
+  }
+
+  // ---- Move / Copy destination picker ----
+
+  openDestPicker(mode) {
+    const sources = Array.from(this.selectedPaths);
+    if (!sources.length) return;
+    this.destMode = mode;
+    this.destSources = sources;
+    this.destPath = this.currentPath; // start browsing from the current folder
+    const isMove = mode === 'move';
+    const n = sources.length;
+    const titleEl = document.getElementById('dest-picker-title');
+    const descEl = document.getElementById('dest-picker-desc');
+    const labelEl = document.getElementById('dest-picker-confirm-label');
+    if (titleEl) titleEl.innerHTML = `<i data-lucide="${isMove ? 'folder-input' : 'copy'}"></i> ${isMove ? 'Move' : 'Copy'} ${n} item${n > 1 ? 's' : ''}`;
+    if (descEl) descEl.textContent = `Choose a destination folder, then click "${isMove ? 'Move' : 'Copy'} here".`;
+    if (labelEl) labelEl.textContent = `${isMove ? 'Move' : 'Copy'} here`;
+    app.openModal('modal-dest-picker');
+    this.renderDestPicker();
+  }
+
+  navigateDestPicker(path) {
+    this.destPath = path;
+    this.renderDestPicker();
+  }
+
+  async renderDestPicker() {
+    const listEl = document.getElementById('dest-picker-list');
+    const crumbEl = document.getElementById('dest-picker-breadcrumbs');
+    const warnEl = document.getElementById('dest-picker-warn');
+    const confirmBtn = document.getElementById('dest-picker-confirm');
+    if (!listEl) return;
+
+    let res;
+    try {
+      res = await api.listFiles(this.destPath);
+    } catch (err) {
+      listEl.innerHTML = `<div style="padding:16px;color:var(--accent-rose,#f43f5e);font-size:0.85rem;">${err.message}</div>`;
+      return;
+    }
+
+    // Breadcrumbs (clickable, last is current)
+    const crumbs = res.breadcrumbs || [];
+    if (crumbEl) {
+      crumbEl.innerHTML = crumbs.map((c, i) => {
+        const label = c.name === 'root' ? 'root' : c.name;
+        const isLast = i === crumbs.length - 1;
+        if (isLast) return `<span style="color:var(--accent-cyan,#22d3ee);font-weight:600;">${label}</span>`;
+        return `<span style="color:#38bdf8;cursor:pointer;" onclick="fileManager.navigateDestPicker('${c.path}')">${label}</span><span style="color:var(--text-dim);">/</span>`;
+      }).join('');
+    }
+
+    // Folders only; when moving, hide the folders being moved.
+    const folders = (res.files || []).filter(f =>
+      f.is_dir && !(this.destMode === 'move' && this.destSources.includes(f.path)));
+
+    if (!folders.length) {
+      listEl.innerHTML = `<div style="padding:20px 16px;color:var(--text-dim);font-size:0.82rem;text-align:center;">No subfolders here.<br>Drop into this folder with the button below.</div>`;
+    } else {
+      listEl.innerHTML = folders.map(f => `
+        <div class="dest-row" onclick="fileManager.navigateDestPicker('${f.path}')"
+          style="display:flex;align-items:center;gap:10px;padding:10px 12px;cursor:pointer;border-bottom:1px solid var(--border-glass);"
+          onmouseover="this.style.background='rgba(255,255,255,0.04)'" onmouseout="this.style.background=''">
+          <i data-lucide="folder" style="width:16px;height:16px;color:#38bdf8;flex-shrink:0;"></i>
+          <span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${f.name}</span>
+          <i data-lucide="chevron-right" style="width:14px;height:14px;color:var(--text-dim);flex-shrink:0;"></i>
+        </div>
+      `).join('');
+    }
+
+    // Guard: can't move a folder into itself or its own subtree (mirrors backend).
+    const intoSelf = this.destMode === 'move' &&
+      this.destSources.some(s => this.destPath === s || this.destPath.startsWith(s + '/'));
+    if (warnEl) warnEl.textContent = intoSelf ? "Can't move a folder into itself." : '';
+    if (confirmBtn) {
+      confirmBtn.disabled = intoSelf;
+      confirmBtn.style.opacity = intoSelf ? '0.5' : '';
+      confirmBtn.style.pointerEvents = intoSelf ? 'none' : '';
+    }
+
+    if (window.lucide) lucide.createIcons();
+  }
+
+  async confirmDest() {
+    const sources = this.destSources || [];
+    if (!sources.length) return;
+    if (this.activeTransfer) {
+      this.showToast('A transfer is already in progress — wait for it to finish.');
+      return;
+    }
+    const isMove = this.destMode === 'move';
+    const confirmBtn = document.getElementById('dest-picker-confirm');
+    if (confirmBtn) confirmBtn.disabled = true;
+    try {
+      // The backend now starts the transfer in the background and returns an
+      // op_id immediately; trackTransfer() polls it for live progress.
+      const res = isMove
+        ? await api.moveFiles(sources, this.destPath)
+        : await api.copyFiles(sources, this.destPath);
+      app.closeModal('modal-dest-picker');
+      this.selectedPaths.clear();
+      this.updateBulkBar();
+      this.refresh();
+      this.trackTransfer(res.op_id, isMove);
+    } catch (err) {
+      this.showToast(err.message);
+    } finally {
+      if (confirmBtn) {
+        confirmBtn.disabled = false;
+        confirmBtn.style.opacity = '';
+        confirmBtn.style.pointerEvents = '';
+      }
+    }
+  }
+
+  // ---- Live transfer progress (move / copy) ----
+
+  /** Human-readable byte size (binary units, matching the backend). */
+  formatBytes(bytes) {
+    if (!bytes || bytes <= 0) return '0 B';
+    const units = ['B', 'KiB', 'MiB', 'GiB', 'TiB'];
+    const i = Math.min(units.length - 1, Math.floor(Math.log(bytes) / Math.log(1024)));
+    const val = bytes / Math.pow(1024, i);
+    return `${val >= 100 || i === 0 ? Math.round(val) : val.toFixed(1)} ${units[i]}`;
+  }
+
+  formatEta(seconds) {
+    if (seconds < 60) return `${Math.ceil(seconds)}s`;
+    if (seconds < 3600) return `${Math.floor(seconds / 60)}m ${Math.round(seconds % 60)}s`;
+    return `${Math.floor(seconds / 3600)}h ${Math.floor((seconds % 3600) / 60)}m`;
+  }
+
+  /**
+   * Open the progress modal and poll the backend operation until it finishes.
+   * The transfer keeps running server-side even if the modal is hidden; the
+   * final result always lands as a toast.
+   */
+  trackTransfer(opId, isMove) {
+    this.activeTransfer = opId;
+    const verb = isMove ? 'Moving' : 'Copying';
+    const titleEl = document.getElementById('transfer-title');
+    if (titleEl) titleEl.innerHTML = `<i data-lucide="${isMove ? 'folder-input' : 'copy'}"></i> ${verb}…`;
+    this.updateTransferUI({
+      status: 'running', total_bytes: 0, transferred_bytes: 0,
+      total_files: 0, done_files: 0, total_items: 0, done_items: 0,
+      current_item: '', current_file: ''
+    });
+    app.openModal('modal-transfer-progress');
+
+    let lastBytes = 0;
+    let lastTime = performance.now();
+    let speed = 0;
+
+    const poll = async () => {
+      if (this.activeTransfer !== opId) return;
+      let state;
+      try {
+        state = await api.getFileOperation(opId);
+      } catch (err) {
+        this.activeTransfer = null;
+        app.closeModal('modal-transfer-progress');
+        this.showToast(`Transfer status lost: ${err.message}`);
+        return;
+      }
+      if (this.activeTransfer !== opId) return;
+
+      // Smoothed speed from byte deltas between polls (for ETA display).
+      const now = performance.now();
+      const dt = (now - lastTime) / 1000;
+      if (dt > 0.05) {
+        const inst = Math.max(0, (state.transferred_bytes - lastBytes) / dt);
+        speed = speed > 0 ? speed * 0.7 + inst * 0.3 : inst;
+        lastBytes = state.transferred_bytes;
+        lastTime = now;
+      }
+
+      this.updateTransferUI(state, speed);
+
+      if (state.status === 'running') {
+        setTimeout(poll, 400);
+        return;
+      }
+
+      // Finished (done or error)
+      this.activeTransfer = null;
+      app.closeModal('modal-transfer-progress');
+      const past = isMove ? 'Moved' : 'Copied';
+      const okCount = (state.completed || []).length;
+      const errCount = (state.errors || []).length;
+      if (okCount && errCount) {
+        this.showToast(`${past} ${okCount}, ${errCount} failed.`);
+      } else if (errCount) {
+        this.showToast(`${isMove ? 'Move' : 'Copy'} failed: ${state.errors[0]}`);
+      } else {
+        this.showToast(`${past} ${okCount} item${okCount === 1 ? '' : 's'}.`);
+      }
+      this.refresh();
+    };
+    poll();
+  }
+
+  updateTransferUI(state, speed = 0) {
+    const bar = document.getElementById('transfer-bar');
+    const percentEl = document.getElementById('transfer-percent');
+    const speedEl = document.getElementById('transfer-speed');
+    const currentEl = document.getElementById('transfer-current');
+    const detailEl = document.getElementById('transfer-detail');
+    if (!bar) return;
+
+    let pct = 0;
+    if (state.total_bytes > 0) pct = (state.transferred_bytes / state.total_bytes) * 100;
+    else if (state.total_files > 0) pct = (state.done_files / state.total_files) * 100;
+    else if (state.total_items > 0) pct = (state.done_items / state.total_items) * 100;
+    if (state.status !== 'running') pct = 100;
+    pct = Math.max(0, Math.min(100, pct));
+
+    bar.style.width = `${pct}%`;
+
+    const scanning = state.status === 'running' && !state.total_bytes && !state.total_files && !state.total_items;
+    if (percentEl) percentEl.textContent = scanning ? 'Scanning…' : `${Math.floor(pct)}%`;
+
+    if (speedEl) {
+      if (state.status === 'running' && speed > 0) {
+        let txt = `${this.formatBytes(speed)}/s`;
+        if (state.total_bytes > state.transferred_bytes) {
+          txt += ` · ${this.formatEta((state.total_bytes - state.transferred_bytes) / speed)} left`;
+        }
+        speedEl.textContent = txt;
+      } else {
+        speedEl.textContent = '';
+      }
+    }
+
+    if (currentEl) {
+      const item = (state.current_item || '').split('/').pop();
+      currentEl.textContent = state.current_file ? `${item} → ${state.current_file}` : (item || '');
+      currentEl.title = currentEl.textContent;
+    }
+
+    if (detailEl) {
+      const parts = [];
+      if (state.total_bytes > 0) parts.push(`${this.formatBytes(state.transferred_bytes)} of ${this.formatBytes(state.total_bytes)}`);
+      if (state.total_files > 0) parts.push(`${state.done_files}/${state.total_files} files`);
+      if (state.total_items > 1) parts.push(`${state.done_items}/${state.total_items} items`);
+      detailEl.textContent = parts.join(' · ');
     }
   }
 
