@@ -99,23 +99,21 @@ class FileManagerView {
     });
 
     // Bulk Zip Download
-    document.getElementById('fm-bulk-zip')?.addEventListener('click', async () => {
+    document.getElementById('fm-bulk-zip')?.addEventListener('click', () => {
       const paths = Array.from(this.selectedPaths);
       if (!paths.length) return;
-      
-      const res = await fetch(api.getDownloadZipUrl(), {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ paths })
-      });
-      if (res.ok) {
-        const blob = await res.blob();
-        const url = window.URL.createObjectURL(blob);
-        const a = document.createElement('a');
-        a.href = url;
-        a.download = 'diskpulse_archive.zip';
-        a.click();
+
+      // Exactly one file selected → skip zipping entirely and stream the file
+      // itself. This is the common "download one movie" case and avoids the
+      // read-2GB-then-compress-then-buffer path that used to hang.
+      if (paths.length === 1) {
+        const only = this.currentFiles.find(f => f.path === paths[0]);
+        if (only && !only.is_dir) {
+          this.downloadSingleFile(paths[0]);
+          return;
+        }
       }
+      this.downloadZip(paths);
     });
 
     // Select all checkbox
@@ -228,6 +226,9 @@ class FileManagerView {
             <button class="btn btn-secondary btn-icon" style="width: 28px; height: 28px;" onclick="event.stopPropagation(); fileManager.openItem('${f.path}', ${f.is_dir}, '${f.category}')" title="Open / Preview">
               <i data-lucide="eye" style="width: 14px; height: 14px;"></i>
             </button>
+            <button class="btn btn-secondary btn-icon" style="width: 28px; height: 28px;" onclick="event.stopPropagation(); fileManager.downloadItem('${f.path}', ${f.is_dir})" title="Download">
+              <i data-lucide="download" style="width: 14px; height: 14px;"></i>
+            </button>
             <button class="btn btn-secondary btn-icon" style="width: 28px; height: 28px;" onclick="event.stopPropagation(); fileManager.promptRename('${f.path}', '${f.name}')" title="Rename">
               <i data-lucide="edit-2" style="width: 14px; height: 14px;"></i>
             </button>
@@ -287,7 +288,7 @@ class FileManagerView {
 
     if (category === 'video') {
       app.switchView('media');
-      mediaPlayer.playVideo(rawUrl, path.split('/').pop());
+      mediaPlayer.playVideo(rawUrl, path.split('/').pop(), path);
     } else if (category === 'audio') {
       app.switchView('media');
       mediaPlayer.playAudio(rawUrl, path.split('/').pop());
@@ -309,8 +310,87 @@ class FileManagerView {
       }
     } else {
       // Direct file download for archives / binaries
-      window.open(`${api.baseUrl}/api/files/download?path=${encodeURIComponent(path)}`, '_blank');
+      this.downloadSingleFile(path);
     }
+  }
+
+  // ---- Downloads (stream to disk, never buffer in a Blob) ----
+
+  /** Row-level download: files stream directly, folders go through zip. */
+  downloadItem(path, isDir) {
+    if (isDir) this.downloadZip([path]);
+    else this.downloadSingleFile(path);
+  }
+
+  /**
+   * Download a single file by navigating a hidden anchor to the streaming
+   * endpoint. The browser writes straight to disk (with its own progress UI)
+   * and supports resume/Range — no multi-GB Blob held in memory.
+   */
+  downloadSingleFile(path) {
+    const name = (path.split('/').pop()) || 'file';
+    const a = document.createElement('a');
+    a.href = `${api.baseUrl}/api/files/download?path=${encodeURIComponent(path)}`;
+    a.download = name;              // hint; server also sets Content-Disposition
+    a.style.display = 'none';
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    this.showToast(`Downloading "${name}"…`);
+  }
+
+  /**
+   * Download several items (or a folder) as a zip. Submits a hidden form into
+   * an off-screen iframe so the archive streams to disk instead of going
+   * through fetch()+blob() (which buffered the whole thing in RAM and hung on
+   * large selections).
+   */
+  downloadZip(paths) {
+    let frame = document.getElementById('fm-dl-frame');
+    if (!frame) {
+      frame = document.createElement('iframe');
+      frame.id = 'fm-dl-frame';
+      frame.name = 'fm-dl-frame';
+      frame.style.display = 'none';
+      document.body.appendChild(frame);
+    }
+    const form = document.createElement('form');
+    form.method = 'POST';
+    form.action = `${api.baseUrl}/api/files/zip-download`;
+    form.target = 'fm-dl-frame';
+    form.style.display = 'none';
+    paths.forEach(p => {
+      const input = document.createElement('input');
+      input.type = 'hidden';
+      input.name = 'paths';
+      input.value = p;
+      form.appendChild(input);
+    });
+    document.body.appendChild(form);
+    form.submit();
+    form.remove();
+    this.showToast(`Preparing ${paths.length} item${paths.length > 1 ? 's' : ''} for download…`);
+  }
+
+  /** Minimal transient toast; the file manager had no notification helper. */
+  showToast(message) {
+    let host = document.getElementById('fm-toast-host');
+    if (!host) {
+      host = document.createElement('div');
+      host.id = 'fm-toast-host';
+      host.style.cssText = 'position:fixed;bottom:20px;right:20px;z-index:9999;display:flex;flex-direction:column;gap:8px;pointer-events:none;';
+      document.body.appendChild(host);
+    }
+    const toast = document.createElement('div');
+    toast.textContent = message;
+    toast.style.cssText = 'background:var(--bg-elevated,#1e293b);color:var(--text-main,#e2e8f0);border:1px solid var(--accent-cyan,#22d3ee);border-radius:8px;padding:10px 16px;font-size:0.85rem;box-shadow:0 6px 20px rgba(0,0,0,0.35);opacity:0;transform:translateY(8px);transition:opacity .2s,transform .2s;';
+    host.appendChild(toast);
+    requestAnimationFrame(() => { toast.style.opacity = '1'; toast.style.transform = 'translateY(0)'; });
+    setTimeout(() => {
+      toast.style.opacity = '0';
+      toast.style.transform = 'translateY(8px)';
+      setTimeout(() => toast.remove(), 250);
+    }, 3200);
   }
 
   async promptRename(path, oldName) {

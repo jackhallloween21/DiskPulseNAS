@@ -301,27 +301,66 @@ class FileManager:
 
         return {"success": len(deleted) > 0, "deleted": deleted, "errors": errors}
 
+    # Extensions that are already compressed — DEFLATE-ing them again just burns
+    # CPU for ~0% size gain, which is what made multi-GB movie archives crawl.
+    _PRECOMPRESSED_EXTS = {
+        # video
+        ".mp4", ".mkv", ".avi", ".mov", ".webm", ".m4v", ".flv", ".wmv", ".mpg", ".mpeg", ".ts",
+        # audio
+        ".mp3", ".m4a", ".aac", ".ogg", ".opus", ".flac", ".wma",
+        # images
+        ".jpg", ".jpeg", ".png", ".gif", ".webp", ".heic", ".avif",
+        # already-archived / compressed containers
+        ".zip", ".gz", ".tgz", ".bz2", ".xz", ".7z", ".rar", ".zst", ".br",
+        # docs that are internally zipped
+        ".pdf", ".docx", ".xlsx", ".pptx",
+    }
+    # Above this size, skip compression regardless of type: the CPU cost of
+    # DEFLATE on a huge file dwarfs any realistic bandwidth/disk saving.
+    _STORE_ABOVE_BYTES = 50 * 1024 * 1024  # 50 MB
+
+    def _zip_compression_for(self, path: Path) -> int:
+        """Pick STORED (fast copy) vs DEFLATED per file so large/precompressed
+        media doesn't stall the whole archive on CPU-bound compression."""
+        try:
+            if path.suffix.lower() in self._PRECOMPRESSED_EXTS:
+                return zipfile.ZIP_STORED
+            if path.stat().st_size >= self._STORE_ABOVE_BYTES:
+                return zipfile.ZIP_STORED
+        except OSError:
+            pass
+        return zipfile.ZIP_DEFLATED
+
     def create_zip_archive(self, rel_paths: List[str]) -> Optional[str]:
-        """Creates a temporary zip archive of requested paths and returns file path."""
+        """Creates a temporary zip archive of requested paths and returns file path.
+
+        Compression is chosen per-entry: already-compressed media and any file
+        over 50 MB are STORED (no compression) so building an archive of a big
+        movie is essentially I/O-bound rather than pegging a CPU core for
+        minutes. Small, compressible files still get DEFLATE.
+        """
         if not rel_paths:
             return None
-        
+
         temp_zip = tempfile.NamedTemporaryFile(delete=False, suffix=".zip")
         temp_zip.close()
 
-        with zipfile.ZipFile(temp_zip.name, "w", zipfile.ZIP_DEFLATED) as zf:
+        # allowZip64 keeps archives valid past the 4 GB / 65k-entry limits.
+        with zipfile.ZipFile(temp_zip.name, "w", zipfile.ZIP_DEFLATED, allowZip64=True) as zf:
             for rel in rel_paths:
                 target = self._resolve_safe_path(rel)
                 if not target.exists():
                     continue
                 if target.is_file():
-                    zf.write(str(target), arcname=target.name)
+                    zf.write(str(target), arcname=target.name,
+                             compress_type=self._zip_compression_for(target))
                 elif target.is_dir():
                     for root, _, files in os.walk(str(target)):
                         for f in files:
                             full_file = Path(root) / f
                             arcname = full_file.relative_to(target.parent)
-                            zf.write(str(full_file), arcname=str(arcname))
+                            zf.write(str(full_file), arcname=str(arcname),
+                                     compress_type=self._zip_compression_for(full_file))
         return temp_zip.name
 
 file_manager = FileManager()

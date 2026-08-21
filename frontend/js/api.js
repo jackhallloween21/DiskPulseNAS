@@ -148,6 +148,27 @@ class DiskPulseAPI {
     return `${this.baseUrl}/api/files/raw?path=${encodeURIComponent(path)}`;
   }
 
+  // Web Media Player (ffprobe/ffmpeg-backed) Endpoints
+  async getMediaInfo(path) {
+    return this.request(`/api/media/info?path=${encodeURIComponent(path)}`);
+  }
+
+  getMediaStreamUrl(path, audioIdx = 0, t = 0, vcodec = "") {
+    const params = new URLSearchParams({
+      path, audio: String(audioIdx), t: String(t || 0)
+    });
+    if (vcodec) params.set('vcodec', vcodec);
+    return `${this.baseUrl}/api/media/stream?${params.toString()}`;
+  }
+
+  getSubtitleUrl(path, { kind = 'embedded', track = 0, file = '', offset = 0 } = {}) {
+    const params = new URLSearchParams({ path, kind });
+    if (kind === 'external') params.set('file', file);
+    else params.set('track', String(track));
+    if (offset && offset > 0) params.set('offset', String(offset));
+    return `${this.baseUrl}/api/media/subtitle?${params.toString()}`;
+  }
+
   // Download Manager Endpoints
   async getDownloads() {
     return this.request('/api/downloads');

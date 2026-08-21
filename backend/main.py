@@ -8,6 +8,7 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect, UploadFile, File, F
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
+from starlette.background import BackgroundTask
 from pydantic import BaseModel
 
 from backend.config import STORAGE_ROOT, FRONTEND_DIR, TELEMETRY_INTERVAL_SECS, DEBUG
@@ -159,6 +160,14 @@ async def copy_files(req: MoveCopyRequest):
 async def delete_files(req: DeleteRequest):
     return file_manager.delete_items(req.paths)
 
+def _cleanup_file(path: str):
+    """Best-effort delete of a temp archive once it has been streamed out."""
+    try:
+        os.remove(path)
+    except OSError:
+        pass
+
+
 @app.post("/api/files/zip")
 async def create_zip(req: BatchZipRequest):
     zip_path = file_manager.create_zip_archive(req.paths)
@@ -167,7 +176,27 @@ async def create_zip(req: BatchZipRequest):
     return FileResponse(
         zip_path,
         filename="diskpulse_archive.zip",
-        media_type="application/zip"
+        media_type="application/zip",
+        background=BackgroundTask(_cleanup_file, zip_path),
+    )
+
+
+@app.post("/api/files/zip-download")
+async def create_zip_download(paths: List[str] = Form(...)):
+    """Form-based twin of /api/files/zip.
+
+    The frontend submits a hidden <form> here (targeting an off-screen iframe)
+    instead of fetch()+blob(). The browser then streams the archive straight to
+    disk, so multi-GB selections no longer have to fit in a JS Blob in RAM.
+    """
+    zip_path = file_manager.create_zip_archive(paths)
+    if not zip_path or not os.path.exists(zip_path):
+        raise HTTPException(status_code=400, detail="Failed to create zip archive")
+    return FileResponse(
+        zip_path,
+        filename="diskpulse_archive.zip",
+        media_type="application/zip",
+        background=BackgroundTask(_cleanup_file, zip_path),
     )
 
 @app.get("/api/files/download")
@@ -302,6 +331,94 @@ async def retry_download(task_id: str):
 async def delete_download(task_id: str, delete_file: bool = False):
     success = download_manager.delete_task(task_id, delete_file)
     return {"success": success}
+
+# ----------------- Web Media Player Routes -----------------
+# Plain HTML5 <video> can't switch embedded audio tracks or render embedded
+# subtitles, so these endpoints use ffmpeg/ffprobe to introspect a file and
+# (when needed) remux/transcode it on demand with a chosen audio track.
+
+@app.get("/api/media/info")
+async def media_info(path: str):
+    """List a media file's audio/subtitle/video tracks + any sidecar subs."""
+    from backend.media_service import probe_media, find_external_subs, has_ffmpeg, has_ffprobe
+
+    target = file_manager._resolve_safe_path(path)
+    if not target.exists() or not target.is_file():
+        raise HTTPException(status_code=404, detail="File not found")
+
+    loop = asyncio.get_event_loop()
+    info = await loop.run_in_executor(None, probe_media, str(target))
+    info["external_subs"] = await loop.run_in_executor(None, find_external_subs, str(target))
+    info["ffmpeg"] = has_ffmpeg()
+    info["ffprobe"] = has_ffprobe()
+    return info
+
+
+@app.get("/api/media/subtitle")
+async def media_subtitle(
+    path: str,
+    kind: str = "embedded",     # embedded | external
+    track: int = 0,             # embedded: type-relative subtitle index
+    file: str = "",             # external: sidecar filename (same dir as video)
+    offset: float = 0.0,        # shift cues earlier (matches a seeked stream's -ss)
+):
+    """Return a subtitle as WebVTT so it can be attached via <track>."""
+    from backend.media_service import extract_subtitle_vtt, convert_external_sub_vtt, shift_vtt
+
+    target = file_manager._resolve_safe_path(path)
+    if not target.exists() or not target.is_file():
+        raise HTTPException(status_code=404, detail="File not found")
+
+    loop = asyncio.get_event_loop()
+    if kind == "external":
+        # Sidecar lives beside the video; keep it inside the storage root.
+        sub_path = (target.parent / os.path.basename(file)).resolve()
+        if not str(sub_path).startswith(str(file_manager.root_dir)) or not sub_path.is_file():
+            raise HTTPException(status_code=404, detail="Subtitle file not found")
+        vtt = await loop.run_in_executor(None, convert_external_sub_vtt, str(sub_path))
+    else:
+        vtt = await loop.run_in_executor(None, extract_subtitle_vtt, str(target), track)
+
+    if not vtt:
+        raise HTTPException(status_code=422, detail="Could not produce WebVTT for this subtitle (it may be image-based).")
+    if offset and offset > 0:
+        vtt = await loop.run_in_executor(None, shift_vtt, vtt, offset)
+    return Response(content=vtt, media_type="text/vtt; charset=utf-8",
+                    headers={"Cache-Control": "no-store"})
+
+
+@app.get("/api/media/stream")
+async def media_stream(
+    path: str,
+    audio: int = 0,            # type-relative audio track index to play
+    t: float = 0.0,            # start offset in seconds (for seeking)
+    vcodec: str = "",          # optional hint from /info to skip a re-probe
+):
+    """Stream the file as fragmented MP4 with the chosen audio track.
+
+    Video is copied when it's already H.264 (cheap), otherwise transcoded.
+    Used whenever the container/codec isn't browser-native or the user picks a
+    non-default audio track.
+    """
+    from backend.media_service import stream_transcode, probe_media, has_ffmpeg
+
+    if not has_ffmpeg():
+        raise HTTPException(status_code=503, detail="ffmpeg is not installed on the server.")
+
+    target = file_manager._resolve_safe_path(path)
+    if not target.exists() or not target.is_file():
+        raise HTTPException(status_code=404, detail="File not found")
+
+    if not vcodec:
+        loop = asyncio.get_event_loop()
+        probed = await loop.run_in_executor(None, probe_media, str(target))
+        vcodec = ((probed.get("video") or {}).get("codec") or "") if probed.get("ok") else ""
+
+    generator = stream_transcode(str(target), audio_rel_index=audio,
+                                 start_time=t, video_codec=vcodec)
+    return StreamingResponse(generator, media_type="video/mp4",
+                             headers={"Cache-Control": "no-store"})
+
 
 # ----------------- Speed Test Routes -----------------
 @app.post("/api/speedtest/run")
