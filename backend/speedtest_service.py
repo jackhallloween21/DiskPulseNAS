@@ -52,23 +52,76 @@ def _new_conn(timeout: float = 20.0) -> http.client.HTTPSConnection:
     return http.client.HTTPSConnection(CF_HOST, timeout=timeout, context=ctx)
 
 
-def _fetch_meta(timeout: float = 8.0) -> Dict[str, Any]:
-    """Cloudflare /meta returns clientIp, asOrganization (ISP), colo, city, country."""
+def _warmup(timeout: float = 15.0) -> None:
+    """Prime DNS + TLS to speed.cloudflare.com so the first *real* request doesn't
+    absorb the cold-start latency — that cold start was making /meta time out
+    intermittently even though download/upload/ping (which run later) succeeded."""
     conn = _new_conn(timeout)
     try:
-        conn.request("GET", CF_META_PATH, headers=_HEADERS)
-        resp = conn.getresponse()
-        raw = resp.read()
-        if resp.status != 200:
-            return {}
-        return json.loads(raw.decode("utf-8", errors="ignore"))
+        conn.request("GET", CF_DOWN_PATH.format(n=0), headers=_HEADERS)
+        conn.getresponse().read()
     except Exception:
-        return {}
+        pass
     finally:
         try:
             conn.close()
         except Exception:
             pass
+
+
+def _http_get(path: str, timeout: float = 15.0, attempts: int = 3) -> Optional[bytes]:
+    """GET a small resource with retries and one level of same-host redirect following."""
+    for _ in range(max(1, attempts)):
+        conn = _new_conn(timeout)
+        try:
+            conn.request("GET", path, headers=_HEADERS)
+            resp = conn.getresponse()
+            raw = resp.read()
+            if resp.status == 200:
+                return raw
+            if resp.status in (301, 302, 307, 308):
+                loc = resp.getheader("Location") or ""
+                if loc.startswith("/"):
+                    path = loc
+                    continue
+                m = re.match(r"https?://%s(/.*)" % re.escape(CF_HOST), loc)
+                if m:
+                    path = m.group(1)
+                    continue
+        except Exception:
+            pass
+        finally:
+            try:
+                conn.close()
+            except Exception:
+                pass
+        time.sleep(0.4)
+    return None
+
+
+def _fetch_meta(timeout: float = 15.0) -> Dict[str, Any]:
+    """Cloudflare /meta returns clientIp, asOrganization (ISP), colo, city, country."""
+    raw = _http_get(CF_META_PATH, timeout=timeout, attempts=3)
+    if not raw:
+        return {}
+    try:
+        return json.loads(raw.decode("utf-8", errors="ignore"))
+    except Exception:
+        return {}
+
+
+def _fetch_trace(timeout: float = 10.0) -> Dict[str, str]:
+    """Fallback for client IP / colo / country when /meta is unavailable.
+    /cdn-cgi/trace returns simple `key=value` lines (ip=, colo=, loc=, ...)."""
+    raw = _http_get("/cdn-cgi/trace", timeout=timeout, attempts=2)
+    if not raw:
+        return {}
+    out: Dict[str, str] = {}
+    for line in raw.decode("utf-8", errors="ignore").splitlines():
+        if "=" in line:
+            k, v = line.split("=", 1)
+            out[k.strip()] = v.strip()
+    return out
 
 
 def _measure_latency(samples: int = _LATENCY_SAMPLES, timeout: float = 8.0) -> Optional[float]:
@@ -254,7 +307,20 @@ class SpeedTestManager:
 
     def _run_cloudflare_sync(self, server_id: Optional[int] = None) -> Dict[str, Any]:
         """Blocking Cloudflare measurement — always run inside an executor."""
+        # Warm up DNS/TLS first; the very first HTTPS request to Cloudflare on a
+        # cold process is the slowest, and it was making /meta time out (empty
+        # IP / ISP / location) even when the later transfers succeeded.
+        _warmup()
+
         meta = _fetch_meta()
+        # If /meta didn't yield the client IP, recover IP / colo / country from the
+        # lightweight /cdn-cgi/trace endpoint so those fields aren't left blank.
+        if not meta.get("clientIp"):
+            trace = _fetch_trace()
+            if trace:
+                meta.setdefault("clientIp", trace.get("ip"))
+                meta.setdefault("colo", trace.get("colo"))
+                meta.setdefault("country", trace.get("loc"))
 
         ping_ms = _measure_latency()
         download_mbps = _measure_download()

@@ -70,6 +70,14 @@ class AddDownloadRequest(BaseModel):
     category: Optional[str] = None
     custom_folder: str = ""
     custom_filename: Optional[str] = None
+    backend: str = "auto"
+    mode: str = "video"            # video | audio
+    max_height: str = "best"       # best | 2160 | 1440 | 1080 | 720 | 480 | 360
+    audio_format: str = "mp3"      # mp3 | m4a | opus | flac | wav
+    audio_bitrate: str = "192"     # 320 | 256 | 192 | 128 | 96
+
+class ProbeRequest(BaseModel):
+    url: str
 
 class TerminalExecRequest(BaseModel):
     session_id: str = "default"
@@ -222,9 +230,49 @@ async def add_download(req: AddDownloadRequest):
         url=req.url,
         category=req.category,
         custom_folder=req.custom_folder,
-        custom_filename=req.custom_filename
+        custom_filename=req.custom_filename,
+        backend=req.backend,
+        mode=req.mode,
+        max_height=req.max_height,
+        audio_format=req.audio_format,
+        audio_bitrate=req.audio_bitrate,
     )
     return task.to_dict()
+
+@app.post("/api/downloads/probe")
+async def probe_download(req: ProbeRequest):
+    """Inspect a media URL and report the qualities that actually exist for it.
+
+    Runs in a thread because yt-dlp extraction is blocking network I/O and would
+    otherwise stall the event loop (and the 1s telemetry stream).
+    """
+    from backend.ytdlp_service import probe_formats, friendly_error
+
+    loop = asyncio.get_event_loop()
+    try:
+        data = await loop.run_in_executor(None, probe_formats, req.url.strip())
+        return {"success": True, **data}
+    except Exception as e:
+        return {"success": False, "error": friendly_error(e)}
+
+@app.get("/api/downloads/ytdlp-version")
+async def get_ytdlp_version():
+    """Installed yt-dlp version, staleness warning, ffmpeg + cookie availability."""
+    from backend.ytdlp_service import ytdlp_version_info, cookie_status
+
+    loop = asyncio.get_event_loop()
+    info = ytdlp_version_info()
+    # Cookie detection reads browser DBs, so keep it off the event loop.
+    info["cookies"] = await loop.run_in_executor(None, cookie_status)
+    return info
+
+@app.post("/api/downloads/ytdlp-update")
+async def post_ytdlp_update():
+    """Run `pip install -U yt-dlp` — the usual fix for YouTube bot-check errors."""
+    from backend.ytdlp_service import update_ytdlp
+
+    loop = asyncio.get_event_loop()
+    return await loop.run_in_executor(None, update_ytdlp)
 
 @app.post("/api/downloads/pause/{task_id}")
 async def pause_download(task_id: str):

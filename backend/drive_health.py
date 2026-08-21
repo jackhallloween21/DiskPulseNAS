@@ -17,7 +17,9 @@ smartctl on every tick would be far too expensive (and would block the event
 loop). Callers just get the most recent snapshot instantly.
 """
 import json
+import os
 import platform
+import re
 import shutil
 import subprocess
 import threading
@@ -110,6 +112,30 @@ def _run(cmd: List[str], timeout: float = 15.0) -> Optional[str]:
         return None
 
 
+def _find_smartctl() -> Optional[str]:
+    """Locate smartctl on PATH, or in the default smartmontools install dir on Windows."""
+    exe = shutil.which("smartctl")
+    if exe:
+        return exe
+    if _IS_WINDOWS:
+        for base in (
+            os.environ.get("ProgramFiles", r"C:\Program Files"),
+            os.environ.get("ProgramFiles(x86)", r"C:\Program Files (x86)"),
+        ):
+            cand = os.path.join(base, "smartmontools", "bin", "smartctl.exe")
+            if os.path.exists(cand):
+                return cand
+    return None
+
+
+def _norm_serial(serial: Optional[str]) -> Optional[str]:
+    """Normalize a serial number for cross-tool matching (strip spaces/punctuation)."""
+    if not serial:
+        return None
+    cleaned = re.sub(r"[^A-Za-z0-9]", "", serial).upper()
+    return cleaned or None
+
+
 def _base_drive(drive_id: str, name: str) -> Dict[str, Any]:
     return {
         "id": drive_id,
@@ -168,7 +194,7 @@ $out | ConvertTo-Json -Depth 3 -Compress
 """
 
 
-def _collect_windows() -> List[Dict[str, Any]]:
+def _collect_windows_powershell() -> List[Dict[str, Any]]:
     exe = shutil.which("powershell") or shutil.which("pwsh")
     if not exe:
         return []
@@ -255,19 +281,97 @@ def _collect_windows() -> List[Dict[str, Any]]:
     return drives
 
 
+def _match_smart(base: Dict[str, Any], smart_drives: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    """Find the smartctl reading that corresponds to a PowerShell drive entry."""
+    bser = _norm_serial(base.get("serial"))
+    if bser:
+        for s in smart_drives:
+            if _norm_serial(s.get("serial")) == bser:
+                return s
+    # Fallback: match on model + capacity (within ~2 GB to allow unit rounding).
+    bmodel = (base.get("model") or "").strip().lower()
+    bcap = base.get("capacity_bytes")
+    for s in smart_drives:
+        smodel = (s.get("model") or "").strip().lower()
+        if not smodel or smodel != bmodel:
+            continue
+        scap = s.get("capacity_bytes")
+        if bcap and scap and abs(int(bcap) - int(scap)) > 2 * 1024 * 1024 * 1024:
+            continue
+        return s
+    return None
+
+
+def _collect_windows() -> List[Dict[str, Any]]:
+    """
+    Base drive list comes from PowerShell (so every disk, including USB flash
+    that has no SMART, still shows). If smartmontools is installed we enrich each
+    matching drive with real temperature / power-on hours / reallocated sectors —
+    Windows' own Get-StorageReliabilityCounter only reports those for NVMe, so
+    SATA & USB-SATA drives need smartctl to expose them.
+    """
+    base = _collect_windows_powershell()
+    smartctl_exe = _find_smartctl()
+
+    if not smartctl_exe:
+        # No smartmontools: leave a hint on drives that are missing thermal data.
+        for d in base:
+            if d.get("temperature_c") is None and not d.get("note"):
+                d["note"] = (
+                    "Install smartmontools for Windows (e.g. `winget install smartmontools`) "
+                    "to show temperature, power-on hours and detailed S.M.A.R.T. health on "
+                    "SATA/USB drives."
+                )
+        return base
+
+    smart_drives = _collect_smartctl(smartctl_exe)
+    if not base:
+        return smart_drives
+    if not smart_drives:
+        return base
+
+    for d in base:
+        match = _match_smart(d, smart_drives)
+        if not match:
+            continue
+        enriched = False
+        if match.get("temperature_c") is not None:
+            d["temperature_c"] = match["temperature_c"]
+            d["temp_status"] = match["temp_status"]
+            enriched = True
+        if match.get("power_on_hours") is not None:
+            d["power_on_hours"] = match["power_on_hours"]
+            enriched = True
+        if match.get("reallocated_sectors") is not None:
+            d["reallocated_sectors"] = match["reallocated_sectors"]
+            enriched = True
+        # Prefer smartctl's health/status when it actually read the SMART log.
+        if match.get("health_percent") is not None:
+            d["health_percent"] = match["health_percent"]
+        if match.get("status") and match["status"] in ("Warning", "Failing"):
+            d["status"] = match["status"]
+        if match.get("device"):
+            d["device"] = match["device"]
+        if enriched:
+            d["data_source"] = "powershell+smartctl"
+            d.pop("note", None)
+    return base
+
+
 # ──────────────────────────────── Linux ───────────────────────────────────────
 
 def _collect_linux() -> List[Dict[str, Any]]:
     drives: List[Dict[str, Any]] = []
-    if shutil.which("smartctl"):
-        drives = _collect_linux_smartctl()
+    exe = _find_smartctl()
+    if exe:
+        drives = _collect_smartctl(exe)
     if not drives:
         drives = _collect_linux_lsblk()
     return drives
 
 
-def _smartctl_scan() -> List[Dict[str, str]]:
-    for args in (["smartctl", "--scan-open", "-j"], ["smartctl", "--scan", "-j"]):
+def _smartctl_scan(exe: str = "smartctl") -> List[Dict[str, str]]:
+    for args in ([exe, "--scan-open", "-j"], [exe, "--scan", "-j"]):
         raw = _run(args, timeout=10.0)
         if not raw:
             continue
@@ -281,17 +385,17 @@ def _smartctl_scan() -> List[Dict[str, str]]:
     return []
 
 
-def _collect_linux_smartctl() -> List[Dict[str, Any]]:
+def _collect_smartctl(exe: str = "smartctl") -> List[Dict[str, Any]]:
     drives: List[Dict[str, Any]] = []
-    devices = _smartctl_scan()
+    devices = _smartctl_scan(exe)
     for i, dev in enumerate(devices[:16]):
         name = dev["name"]
         dtype = dev.get("type")
-        cmd = ["smartctl", "-a", "-j"]
+        cmd = [exe, "-a", "-j"]
         if dtype:
             cmd += ["-d", dtype]
         cmd.append(name)
-        raw = _run(cmd, timeout=15.0)
+        raw = _run(cmd, timeout=12.0)
         if not raw:
             continue
         try:

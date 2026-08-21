@@ -153,16 +153,36 @@ class DiskPulseAPI {
     return this.request('/api/downloads');
   }
 
-  async addDownload(url, category = null, customFolder = "", customFilename = null) {
+  async addDownload(url, category = null, customFolder = "", customFilename = null, opts = {}) {
     return this.request('/api/downloads/add', {
       method: 'POST',
       body: JSON.stringify({
         url,
         category,
         custom_folder: customFolder,
-        custom_filename: customFilename
+        custom_filename: customFilename,
+        backend: opts.backend || 'auto',
+        mode: opts.mode || 'video',
+        max_height: opts.maxHeight || 'best',
+        audio_format: opts.audioFormat || 'mp3',
+        audio_bitrate: opts.audioBitrate || '192'
       })
     });
+  }
+
+  async probeMedia(url) {
+    return this.request('/api/downloads/probe', {
+      method: 'POST',
+      body: JSON.stringify({ url })
+    });
+  }
+
+  async getYtdlpVersion() {
+    return this.request('/api/downloads/ytdlp-version');
+  }
+
+  async updateYtdlp() {
+    return this.request('/api/downloads/ytdlp-update', { method: 'POST' });
   }
 
   async pauseDownload(taskId) {

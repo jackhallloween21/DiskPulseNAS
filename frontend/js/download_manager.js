@@ -13,17 +13,53 @@ class DownloadManagerView {
 
   bindEvents() {
     // Open Add Download Modal
-    document.getElementById('btn-open-add-download')?.addEventListener('click', () => {
-      document.getElementById('modal-dl-url').value = '';
-      document.getElementById('modal-dl-custom-dir').value = '';
+    const openModal = () => {
+      this.resetDownloadModal();
       app.openModal('modal-add-download');
+      this.refreshYtdlpStrip();
+    };
+    document.getElementById('btn-open-add-download')?.addEventListener('click', openModal);
+    document.getElementById('quick-btn-download')?.addEventListener('click', openModal);
+
+    // Auto-reveal media options when a media/YouTube URL is entered
+    const urlInput = document.getElementById('modal-dl-url');
+    urlInput?.addEventListener('input', () => {
+      const looksMedia = this.isMediaUrl(urlInput.value.trim());
+      const box = document.getElementById('modal-dl-media-options');
+      if (box && looksMedia && box.style.display === 'none') {
+        box.style.display = 'block';
+      }
+      // Invalidate a stale probe if the URL changed
+      if (this._probedUrl && urlInput.value.trim() !== this._probedUrl) {
+        this.clearProbePreview();
+      }
     });
 
-    document.getElementById('quick-btn-download')?.addEventListener('click', () => {
-      document.getElementById('modal-dl-url').value = '';
-      document.getElementById('modal-dl-custom-dir').value = '';
-      app.openModal('modal-add-download');
+    // Fetch available formats
+    document.getElementById('modal-dl-fetch')?.addEventListener('click', () => this.handleProbe());
+
+    // Video / Audio mode toggle
+    document.querySelectorAll('.dl-mode-btn').forEach(btn => {
+      btn.addEventListener('click', () => {
+        document.querySelectorAll('.dl-mode-btn').forEach(b => b.classList.remove('active'));
+        btn.classList.add('active');
+        const audio = btn.dataset.mode === 'audio';
+        document.getElementById('modal-dl-video-row').style.display = audio ? 'none' : 'block';
+        document.getElementById('modal-dl-audio-row').style.display = audio ? 'block' : 'none';
+        this.updateFfmpegWarning();
+      });
     });
+
+    // Lossless formats have no bitrate choice
+    document.getElementById('modal-dl-audio-format')?.addEventListener('change', (e) => {
+      const lossless = ['flac', 'wav'].includes(e.target.value);
+      const wrap = document.getElementById('modal-dl-bitrate-wrap');
+      if (wrap) wrap.style.visibility = lossless ? 'hidden' : 'visible';
+      this.updateFfmpegWarning();
+    });
+
+    // Update yt-dlp
+    document.getElementById('modal-dl-ytdlp-update')?.addEventListener('click', () => this.handleYtdlpUpdate());
 
     // Submit Add Download
     document.getElementById('modal-dl-submit')?.addEventListener('click', async () => {
@@ -34,9 +70,16 @@ class DownloadManagerView {
       }
       const category = document.getElementById('modal-dl-category').value;
       const customDir = document.getElementById('modal-dl-custom-dir').value.trim();
+      const mode = document.querySelector('.dl-mode-btn.active')?.dataset.mode || 'video';
+      const opts = {
+        mode,
+        maxHeight: document.getElementById('modal-dl-quality').value,
+        audioFormat: document.getElementById('modal-dl-audio-format').value,
+        audioBitrate: document.getElementById('modal-dl-audio-bitrate').value,
+      };
 
       try {
-        await api.addDownload(url, category === 'downloads' ? null : category, customDir);
+        await api.addDownload(url, category === 'downloads' ? null : category, customDir, null, opts);
         app.closeModal('modal-add-download');
         app.switchView('downloads');
         this.fetchTasks();
@@ -54,6 +97,185 @@ class DownloadManagerView {
         this.renderTasks();
       });
     });
+  }
+
+  // Rough check: does this look like a link yt-dlp handles (so we offer quality)?
+  isMediaUrl(url) {
+    if (!url || url.startsWith('magnet:')) return false;
+    if (/\.(torrent|iso|zip|rar|7z|exe|dmg|pkg|deb|img|bin|tar|gz)$/i.test(url)) return false;
+    return /(youtube\.com|youtu\.be|vimeo\.com|dailymotion\.com|tiktok\.com|twitch\.tv|soundcloud\.com|reddit\.com|facebook\.com|instagram\.com)/i.test(url)
+      || /^https?:\/\//i.test(url);  // allow any http(s); probe will confirm
+  }
+
+  resetDownloadModal() {
+    document.getElementById('modal-dl-url').value = '';
+    document.getElementById('modal-dl-custom-dir').value = '';
+    document.getElementById('modal-dl-media-options').style.display = 'none';
+    document.getElementById('modal-dl-quality').innerHTML = `
+      <option value="best">Best available</option>
+      <option value="2160">2160p (4K)</option>
+      <option value="1440">1440p (2K)</option>
+      <option value="1080">1080p (Full HD)</option>
+      <option value="720">720p (HD)</option>
+      <option value="480">480p</option>
+      <option value="360">360p</option>`;
+    document.querySelectorAll('.dl-mode-btn').forEach(b => b.classList.toggle('active', b.dataset.mode === 'video'));
+    document.getElementById('modal-dl-video-row').style.display = 'block';
+    document.getElementById('modal-dl-audio-row').style.display = 'none';
+    this.clearProbePreview();
+  }
+
+  clearProbePreview() {
+    this._probedUrl = null;
+    this._probeData = null;
+    const preview = document.getElementById('modal-dl-preview');
+    if (preview) preview.style.display = 'none';
+    const msg = document.getElementById('modal-dl-probe-msg');
+    if (msg) msg.style.display = 'none';
+    const warn = document.getElementById('modal-dl-ffmpeg-warn');
+    if (warn) warn.style.display = 'none';
+  }
+
+  async handleProbe() {
+    const url = document.getElementById('modal-dl-url').value.trim();
+    if (!url) { alert('Enter a URL first.'); return; }
+
+    const btn = document.getElementById('modal-dl-fetch');
+    const msg = document.getElementById('modal-dl-probe-msg');
+    const origHtml = btn.innerHTML;
+    btn.disabled = true;
+    btn.innerHTML = '<i data-lucide="loader"></i> Fetching…';
+    if (window.lucide) lucide.createIcons();
+    if (msg) { msg.style.display = 'block'; msg.style.color = 'var(--text-dim)'; msg.textContent = 'Inspecting available formats…'; }
+
+    try {
+      const res = await api.probeMedia(url);
+      if (!res.success) throw new Error(res.error || 'Could not read this URL.');
+      this._probedUrl = url;
+      this._probeData = res;
+      this.applyProbe(res);
+      if (msg) { msg.style.display = 'none'; }
+    } catch (err) {
+      if (msg) { msg.style.color = 'var(--accent-rose)'; msg.textContent = err.message; }
+    } finally {
+      btn.disabled = false;
+      btn.innerHTML = origHtml;
+      if (window.lucide) lucide.createIcons();
+    }
+  }
+
+  applyProbe(data) {
+    document.getElementById('modal-dl-media-options').style.display = 'block';
+
+    // Preview card
+    const preview = document.getElementById('modal-dl-preview');
+    if (data.thumbnail) {
+      document.getElementById('modal-dl-thumb').src = data.thumbnail;
+      document.getElementById('modal-dl-thumb').style.display = 'block';
+    } else {
+      document.getElementById('modal-dl-thumb').style.display = 'none';
+    }
+    document.getElementById('modal-dl-title').textContent = data.title || 'Media';
+    const metaBits = [];
+    if (data.uploader) metaBits.push(data.uploader);
+    if (data.duration_human) metaBits.push(data.duration_human);
+    if (data.extractor) metaBits.push(data.extractor);
+    document.getElementById('modal-dl-meta').textContent = metaBits.join(' · ');
+    preview.style.display = 'flex';
+
+    // Populate real video qualities
+    const qSel = document.getElementById('modal-dl-quality');
+    if (data.video_options && data.video_options.length) {
+      qSel.innerHTML = '<option value="best">Best available</option>' +
+        data.video_options.map(o => `<option value="${o.height}">${o.display}</option>`).join('');
+    }
+
+    // Populate audio bitrate options from what actually exists
+    const bSel = document.getElementById('modal-dl-audio-bitrate');
+    if (data.audio_options && data.audio_options.length) {
+      const seen = new Set();
+      const opts = [];
+      data.audio_options.forEach(o => {
+        // Snap real abr to the nearest common preset label but keep the real number
+        const val = String(o.abr);
+        if (!seen.has(val)) { seen.add(val); opts.push(`<option value="${val}">${o.display}</option>`); }
+      });
+      if (opts.length) bSel.innerHTML = opts.join('');
+    }
+
+    this.updateFfmpegWarning(data);
+  }
+
+  updateFfmpegWarning(data) {
+    data = data || this._probeData;
+    const warn = document.getElementById('modal-dl-ffmpeg-warn');
+    if (!warn) return;
+    const hasFfmpeg = data ? data.ffmpeg !== false : true;
+    const mode = document.querySelector('.dl-mode-btn.active')?.dataset.mode || 'video';
+    const height = document.getElementById('modal-dl-quality').value;
+
+    if (!hasFfmpeg && mode === 'audio') {
+      warn.style.display = 'block';
+      warn.textContent = 'ffmpeg not found — MP3/FLAC/WAV conversion is unavailable. Pick M4A to grab the original audio, or install ffmpeg.';
+    } else if (!hasFfmpeg && (height === 'best' || parseInt(height, 10) > 720)) {
+      warn.style.display = 'block';
+      warn.textContent = 'ffmpeg not found — 1080p+ needs muxing and will fall back to ≤720p. Install ffmpeg for full quality.';
+    } else {
+      warn.style.display = 'none';
+    }
+  }
+
+  async refreshYtdlpStrip() {
+    const strip = document.getElementById('modal-dl-ytdlp-strip');
+    const status = document.getElementById('modal-dl-ytdlp-status');
+    const updateBtn = document.getElementById('modal-dl-ytdlp-update');
+    if (!strip) return;
+    strip.style.display = 'flex';
+    if (status) status.textContent = 'Checking yt-dlp…';
+    if (updateBtn) updateBtn.style.display = 'none';
+
+    try {
+      const info = await api.getYtdlpVersion();
+      if (!info.installed) {
+        if (status) { status.innerHTML = '<span style="color: var(--accent-rose);">yt-dlp not installed</span>'; }
+        if (updateBtn) { updateBtn.style.display = 'inline-flex'; updateBtn.innerHTML = '<i data-lucide="download"></i> Install yt-dlp'; }
+      } else {
+        const cookieTxt = info.cookies && info.cookies.available
+          ? ` · cookies: ${info.cookies.browser}` : ' · no signed-in cookies found';
+        const ffTxt = info.ffmpeg ? '' : ' · no ffmpeg';
+        if (status) {
+          status.innerHTML = `yt-dlp ${info.version || '?'}${info.stale ? ' <span style="color: var(--accent-amber);">(outdated)</span>' : ''}<span style="opacity:0.7;">${cookieTxt}${ffTxt}</span>`;
+        }
+        if (updateBtn) updateBtn.style.display = info.stale ? 'inline-flex' : 'inline-flex';
+      }
+    } catch (_) {
+      if (status) status.textContent = 'Could not check yt-dlp version.';
+    }
+    if (window.lucide) lucide.createIcons();
+  }
+
+  async handleYtdlpUpdate() {
+    const btn = document.getElementById('modal-dl-ytdlp-update');
+    const status = document.getElementById('modal-dl-ytdlp-status');
+    const orig = btn.innerHTML;
+    btn.disabled = true;
+    btn.innerHTML = '<i data-lucide="loader"></i> Updating…';
+    if (window.lucide) lucide.createIcons();
+    if (status) status.textContent = 'Running pip install -U yt-dlp… this can take a minute.';
+
+    try {
+      const res = await api.updateYtdlp();
+      if (status) {
+        status.style.color = res.success ? 'var(--accent-emerald)' : 'var(--accent-rose)';
+        status.textContent = res.message;
+      }
+    } catch (err) {
+      if (status) { status.style.color = 'var(--accent-rose)'; status.textContent = err.message; }
+    } finally {
+      btn.disabled = false;
+      btn.innerHTML = orig;
+      if (window.lucide) lucide.createIcons();
+    }
   }
 
   startPolling() {
@@ -177,11 +399,19 @@ class DownloadManagerView {
             <div class="dl-progress-fill ${isCompleted ? 'completed' : ''}" style="width: ${t.progress_percent}%;"></div>
           </div>
 
+          ${isError && t.error_message ? `
+            <div style="margin-top: 8px; font-size: 0.75rem; color: var(--accent-rose); background: rgba(244,63,94,0.08); border: 1px solid rgba(244,63,94,0.2); border-radius: 8px; padding: 8px 10px; display: flex; gap: 8px; align-items: flex-start;">
+              <i data-lucide="alert-triangle" style="width: 14px; height: 14px; flex-shrink: 0; margin-top: 1px;"></i>
+              <span>${t.error_message}</span>
+            </div>
+          ` : ''}
+
           <div class="dl-task-info">
             <div>
               <span>${t.downloaded_human} / ${t.total_human} (${t.progress_percent}%)</span>
               ${t.is_magnet ? `<span style="margin-left: 12px; color: var(--accent-violet);">Peers: ${t.peers} | Seeds: ${t.seeds}</span>` : ''}
               ${t.backend ? `<span class="nav-badge" style="margin-left: 8px; font-size: 0.65rem;">${t.backend}</span>` : ''}
+              ${t.quality_label ? `<span class="nav-badge" style="margin-left: 6px; font-size: 0.65rem; background: rgba(139,92,246,0.15); color: var(--accent-violet);">${t.quality_label}</span>` : ''}
             </div>
             <div>
               ${isDownloading ? `

@@ -210,45 +210,83 @@ class DashboardVisualizer {
       document.getElementById('dash-ram-bar').style.width = `${mem.percent}%`;
     }
 
-    // 6. S.M.A.R.T. Drive Health & Temperature Cards
+    // 6. S.M.A.R.T. Drive Health & Temperature Cards (real hardware data)
     const drivesGrid = document.getElementById('dash-drives-grid');
     if (drivesGrid && data.smart_drives) {
+      if (data.smart_drives.length === 0) {
+        drivesGrid.innerHTML = `<div class="drive-card" style="grid-column: 1 / -1; text-align: center; color: var(--text-dim);">No drives detected.</div>`;
+      } else {
       drivesGrid.innerHTML = data.smart_drives.map(drive => {
+        const tempKnown = drive.temperature_c !== null && drive.temperature_c !== undefined;
+        const healthKnown = drive.health_percent !== null && drive.health_percent !== undefined;
+        const pohKnown = drive.power_on_hours !== null && drive.power_on_hours !== undefined;
+
         let badgeClass = 'badge-normal';
         if (drive.temp_status === 'Warning') badgeClass = 'badge-warning';
-        if (drive.temp_status === 'Critical') badgeClass = 'badge-critical';
+        else if (drive.temp_status === 'Critical') badgeClass = 'badge-critical';
+
+        const tempTxt = tempKnown ? `${drive.temperature_c}°C` : 'N/A';
+        const badgeTxt = tempKnown
+          ? `${tempTxt} ${drive.temp_status}`
+          : (drive.temp_status === 'Unknown' ? 'Temp N/A' : drive.temp_status);
+        const badgeStyle = (drive.temp_status === 'Unknown')
+          ? 'style="background: rgba(100,116,139,0.15); color: var(--text-dim);"'
+          : '';
+
+        let statusColor = 'var(--accent-emerald)';
+        if (drive.status === 'Warning') statusColor = 'var(--accent-amber)';
+        else if (drive.status === 'Failing') statusColor = 'var(--accent-rose)';
+        else if (drive.status === 'Unknown') statusColor = 'var(--text-dim)';
+
+        const healthTxt = healthKnown ? `${drive.health_percent}%` : '—';
+        const healthWidth = healthKnown ? drive.health_percent : 0;
+        const healthColor = healthKnown ? 'var(--accent-emerald)' : 'var(--text-dim)';
+
+        let pohTxt = '—';
+        if (pohKnown) {
+          const hrs = drive.power_on_hours;
+          pohTxt = hrs < 24 ? `${hrs}h` : `${(hrs / 24).toFixed(0)}d`;
+        }
+
+        // Subtitle: media type · capacity · interface (only real, known bits)
+        const subBits = [];
+        if (drive.media_type && drive.media_type !== 'Unknown') subBits.push(drive.media_type);
+        if (drive.capacity_human && drive.capacity_human !== '—') subBits.push(drive.capacity_human);
+        if (drive.interface && drive.interface !== '—') subBits.push(drive.interface);
+        const subLine = subBits.join(' · ');
 
         return `
-          <div class="drive-card">
+          <div class="drive-card"${drive.note ? ` title="${drive.note}"` : ''}>
             <div class="drive-header">
               <div>
                 <div class="drive-name">${drive.name}</div>
-                <div style="font-size: 0.75rem; color: var(--text-dim);">S.M.A.R.T. Status: <strong style="color: var(--accent-emerald);">${drive.status}</strong></div>
+                <div style="font-size: 0.75rem; color: var(--text-dim);">${subLine ? subLine + ' — ' : ''}S.M.A.R.T.: <strong style="color: ${statusColor};">${drive.status}</strong></div>
               </div>
-              <span class="drive-badge ${badgeClass}">${drive.temperature_c}°C ${drive.temp_status}</span>
+              <span class="drive-badge ${badgeClass}"${badgeStyle ? ' ' + badgeStyle : ''}>${badgeTxt}</span>
             </div>
-            
+
             <div class="progress-mini" style="height: 4px;">
-              <div class="progress-mini-bar" style="width: ${drive.health_percent}%; background: var(--grad-emerald);"></div>
+              <div class="progress-mini-bar" style="width: ${healthWidth}%; background: var(--grad-emerald);"></div>
             </div>
 
             <div class="drive-metrics">
               <div>
-                <div class="drive-metric-val" style="color: var(--accent-emerald);">${drive.health_percent}%</div>
+                <div class="drive-metric-val" style="color: ${healthColor};">${healthTxt}</div>
                 <div class="drive-metric-lbl">Health</div>
               </div>
               <div>
-                <div class="drive-metric-val" style="color: var(--accent-cyan);">${drive.temperature_c}°C</div>
+                <div class="drive-metric-val" style="color: var(--accent-cyan);">${tempTxt}</div>
                 <div class="drive-metric-lbl">Temp</div>
               </div>
               <div>
-                <div class="drive-metric-val" style="color: var(--accent-violet);">${(drive.power_on_hours / 24).toFixed(0)}d</div>
+                <div class="drive-metric-val" style="color: var(--accent-violet);">${pohTxt}</div>
                 <div class="drive-metric-lbl">Power-On</div>
               </div>
             </div>
           </div>
         `;
       }).join('');
+      }
     }
 
     // 7. Active Partition Mounts Table

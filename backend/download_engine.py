@@ -14,6 +14,14 @@ import humanize
 import urllib.parse
 
 from backend.config import STORAGE_ROOT, DOWNLOAD_CATEGORIES
+from backend.ytdlp_service import (
+    AUDIO_FORMATS,
+    extract_with_fallback,
+    friendly_error,
+    get_ytdlp,
+    has_ffmpeg,
+    resolve_output_path,
+)
 
 try:
     # Optional — set these in backend/config.py to point at your aria2c daemon.
@@ -80,6 +88,10 @@ class DownloadTask:
         custom_folder: str = "",
         name: Optional[str] = None,
         backend: str = "auto",
+        mode: str = "video",
+        max_height: str = "best",
+        audio_format: str = "mp3",
+        audio_bitrate: str = "192",
     ):
         self.task_id = task_id
         self.url = url
@@ -91,6 +103,14 @@ class DownloadTask:
         self.backend_requested = backend if backend in VALID_BACKENDS else "auto"
         self.backend = self.backend_requested
         self.url_kind = classify_url(url)
+
+        # Media options (yt-dlp only)
+        self.mode = "audio" if mode == "audio" else "video"
+        self.max_height = str(max_height or "best")
+        self.audio_format = audio_format if audio_format in AUDIO_FORMATS else "mp3"
+        self.audio_bitrate = str(audio_bitrate or "192")
+        #: Which bot-check strategy actually worked, surfaced in the UI.
+        self.strategy = ""
 
         # Extracted filename
         self.filename = name or self._determine_filename(url)
@@ -200,7 +220,23 @@ class DownloadTask:
             "is_magnet": self.is_magnet,
             "peers": self.peers,
             "seeds": self.seeds,
+            "mode": self.mode,
+            "max_height": self.max_height,
+            "audio_format": self.audio_format,
+            "audio_bitrate": self.audio_bitrate,
+            "quality_label": self._quality_label(),
+            "strategy": self.strategy,
         }
+
+    def _quality_label(self) -> str:
+        """Short human tag for the requested quality, shown on the task row."""
+        if self.url_kind != "youtube":
+            return ""
+        if self.mode == "audio":
+            if self.audio_format in ("flac", "wav"):
+                return f"{self.audio_format.upper()} lossless"
+            return f"{self.audio_format.upper()} {self.audio_bitrate}kbps"
+        return "Best quality" if self.max_height == "best" else f"{self.max_height}p"
 
 
 class DownloadManager:
@@ -252,6 +288,10 @@ class DownloadManager:
         custom_folder: str = "",
         custom_filename: Optional[str] = None,
         backend: str = "auto",
+        mode: str = "video",
+        max_height: str = "best",
+        audio_format: str = "mp3",
+        audio_bitrate: str = "192",
     ) -> DownloadTask:
         url = url.strip()
         if not category:
@@ -274,6 +314,10 @@ class DownloadManager:
             custom_folder=custom_folder,
             name=custom_filename,
             backend=backend,
+            mode=mode,
+            max_height=max_height,
+            audio_format=audio_format,
+            audio_bitrate=audio_bitrate,
         )
         self.tasks[task_id] = task
 
@@ -502,20 +546,32 @@ class DownloadManager:
     # ------------------------------------------------------------ ytdlp
 
     async def _download_ytdlp(self, task: DownloadTask):
-        try:
-            import yt_dlp
-        except ImportError:
+        yt_dlp = get_ytdlp()
+        if yt_dlp is None:
             task.status = "error"
-            task.error_message = "yt-dlp is not installed. Run: pip install yt-dlp"
+            task.error_message = "yt-dlp is not installed. Run: pip install -U yt-dlp"
             return
 
         loop = asyncio.get_event_loop()
-        has_ffmpeg = shutil.which("ffmpeg") is not None
+        ffmpeg = has_ffmpeg()
+
+        # Audio extraction and 1080p+ muxing both require ffmpeg. Fail loudly
+        # rather than silently handing back a 720p file the user didn't ask for.
+        if task.mode == "audio" and not ffmpeg:
+            if task.audio_format != "m4a":
+                task.status = "error"
+                task.error_message = (
+                    f"Converting to {task.audio_format.upper()} needs ffmpeg, which isn't "
+                    "installed. Install it (winget install ffmpeg / apt install ffmpeg), "
+                    "or choose M4A to download the original audio stream without conversion."
+                )
+                return
 
         def progress_hook(d: Dict[str, Any]):
             if task._cancel_flag:
                 raise yt_dlp.utils.DownloadError("Cancelled by user")
-            if d.get("status") == "downloading":
+            status = d.get("status")
+            if status == "downloading":
                 task.downloaded_bytes = d.get("downloaded_bytes", 0) or 0
                 task.total_bytes = d.get("total_bytes") or d.get("total_bytes_estimate") or 0
                 task.speed_bytes_sec = d.get("speed") or 0
@@ -525,51 +581,53 @@ class DownloadManager:
                 if eta:
                     task.eta_seconds = eta
                 task.status = "downloading"
-            elif d.get("status") == "finished":
+            elif status == "finished":
+                # Post-processing (mux/convert) still to come.
                 task.progress_percent = 99.0
+                task.speed_bytes_sec = 0.0
+
+        def note_attempt(name: str):
+            task.strategy = name
 
         def run() -> str:
-            # Format selection:
-            # If ffmpeg is installed, download highest res video+audio and merge to mp4.
-            # If ffmpeg is absent, download pre-merged single stream progressive MP4 (best[ext=mp4]/best)
-            # which works on Windows/Linux without requiring ffmpeg.
-            if has_ffmpeg:
-                fmt = "bestvideo[ext=mp4]+bestaudio[ext=m4a]/bestvideo+bestaudio/best[ext=mp4]/best"
-                merge_fmt = "mp4"
-            else:
-                fmt = "best[ext=mp4]/best"
-                merge_fmt = None
+            info, strategy = extract_with_fallback(
+                task.url,
+                download=True,
+                outtmpl=str(task.target_dir / "%(title).180B [%(id)s].%(ext)s"),
+                mode=task.mode,
+                max_height=task.max_height,
+                audio_format=task.audio_format,
+                audio_bitrate=task.audio_bitrate,
+                progress_hooks=[progress_hook],
+                on_attempt=note_attempt,
+            )
+            task.strategy = strategy
 
-            ydl_opts: Dict[str, Any] = {
-                "extractor_args": {"youtube": {"player_client": ["android", "ios", "mweb"]}},
-                "outtmpl": str(task.target_dir / "%(title).180B [%(id)s].%(ext)s"),
-                "progress_hooks": [progress_hook],
-                "quiet": True,
-                "no_warnings": True,
-                "noprogress": True,
-                "format": fmt,
-                "continuedl": True,
-                "noplaylist": True,
-            }
-            if merge_fmt:
-                ydl_opts["merge_output_format"] = merge_fmt
-
-            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                # Pre-extract info to obtain video title upfront
-                try:
-                    info_dict = ydl.extract_info(task.url, download=False)
-                    if info_dict and "title" in info_dict:
-                        task.filename = f"{info_dict['title'][:80]}.mp4"
-                except Exception:
-                    pass
-
-                info = ydl.extract_info(task.url, download=True)
-                return ydl.prepare_filename(info)
+            # Post-processing renames the file (e.g. .webm → .mp3), so trust the
+            # path yt-dlp reports rather than the pre-conversion template.
+            fallback = str(task.target_dir / f"{info.get('title', 'download')}.{info.get('ext', 'mp4')}")
+            return resolve_output_path(info, fallback)
 
         try:
             filepath = await loop.run_in_executor(None, run)
-            task.target_filepath = Path(filepath)
-            task.filename = task.target_filepath.name
+            resolved = Path(filepath)
+            # If the exact path is missing, look for a same-stem sibling (the
+            # post-processor may have changed the container).
+            if not resolved.exists():
+                matches = sorted(
+                    task.target_dir.glob(resolved.stem + ".*"),
+                    key=lambda p: p.stat().st_mtime,
+                    reverse=True,
+                )
+                if matches:
+                    resolved = matches[0]
+
+            task.target_filepath = resolved
+            task.filename = resolved.name
+            if resolved.exists():
+                size = resolved.stat().st_size
+                task.total_bytes = size
+                task.downloaded_bytes = size
             task.status = "completed"
             task.progress_percent = 100.0
             task.speed_bytes_sec = 0.0
@@ -579,7 +637,7 @@ class DownloadManager:
                 task.status = "cancelled"
             else:
                 task.status = "error"
-                task.error_message = str(e)
+                task.error_message = friendly_error(e)
                 task.speed_bytes_sec = 0.0
 
     # ------------------------------------------------------ wget / curl
@@ -812,12 +870,19 @@ class DownloadManager:
     def retry_task(self, task_id: str) -> bool:
         old_task = self.tasks.get(task_id)
         if old_task:
+            # Preserve the original filename only for non-yt-dlp jobs; yt-dlp
+            # derives its own name from the (possibly re-picked) format.
+            keep_name = None if old_task.url_kind == "youtube" else old_task.filename
             return bool(self.add_download(
                 url=old_task.url,
                 category=old_task.category,
                 custom_folder=old_task.custom_folder,
-                custom_filename=old_task.filename,
+                custom_filename=keep_name,
                 backend=old_task.backend_requested,
+                mode=old_task.mode,
+                max_height=old_task.max_height,
+                audio_format=old_task.audio_format,
+                audio_bitrate=old_task.audio_bitrate,
             ))
         return False
 

@@ -9,7 +9,7 @@
 - 📊 **Real-Time System & Drive Telemetry**: Live storage consumption, read/write IOPS, MB/s bandwidth, per-core CPU load, RAM allocation, and S.M.A.R.T. temperature health watchdog over WebSockets.
 - 🗂️ **Interactive Web File Manager**: Full-featured file browser with breadcrumb navigation, dual view (Grid & List), file creation, search, rename, move, copy, deletion, and batch ZIP archive downloads.
 - 💻 **Embedded Web Terminal Shell Widget**: Execute safe Linux/Unix file management commands (`ls`, `ll`, `cd`, `mkdir`, `mv`, `cp`, `rm`, `cat`, `echo`, `touch`, `du`, `stat`, `df`, `top`, `free`, `diskpulse`) directly from your browser with ANSI color output.
-- ⚡ **High-Speed Multi-Engine Downloader**: Download HTTP/HTTPS URLs, YouTube/video links (via `yt-dlp`), and Magnet/Torrent links (natively powered by `libtorrent` on Windows & Linux or optional Aria2) with live speed monitoring, pause/resume, category tagging, and automatic directory organization.
+- ⚡ **High-Speed Multi-Engine Downloader**: Download HTTP/HTTPS URLs, YouTube/video links (via `yt-dlp`), and Magnet/Torrent links (natively powered by `libtorrent` on Windows & Linux or optional Aria2) with live speed monitoring, pause/resume, category tagging, and automatic directory organization. Pick exact **video quality** (up to 4K) or extract **audio** (MP3/M4A/Opus/FLAC/WAV) with a "Fetch formats" preview, resilient anti-bot handling (player-client rotation + browser-cookie auth), and a one-click in-app **yt-dlp updater**.
 - 🚀 **NAS Network & Internet Speed Test**: Real-time throughput benchmark for Download Mbps, Upload Mbps, Ping latency, and ISP / datacenter detection — one-click, powered by Cloudflare's global speed edge (no external CLI required).
 - 📤 **Drag-and-Drop Multi-Device Uploader**: Upload large files seamlessly with real-time queue tracking and instant Mobile QR Pairing for phone-to-NAS uploading.
 - 🎬 **In-Browser Web Media Player**: High-fidelity audio player with animated canvas waveform visualizer and streaming video player with playback speed controls.
@@ -38,9 +38,27 @@ sudo apt install smartmontools      # Debian / Ubuntu
 sudo python run.py
 ```
 
-**Windows** — run DiskPulse **as Administrator** (it uses the built-in PowerShell storage cmdlets, so there is nothing extra to install).
+**Windows** — install `smartmontools`, then run DiskPulse **as Administrator**:
 
-> Without elevated privileges the drive cards still show the real model, capacity and media type — only temperature and power-on hours fall back to `N/A`.
+```powershell
+winget install smartmontools     # or:  choco install smartmontools
+
+# then launch from an *elevated* PowerShell / Windows Terminal
+python run.py
+```
+
+> Windows' built-in storage cmdlets only report temperature & power-on hours for **NVMe** drives, so `smartmontools` is what unlocks those metrics on **SATA and USB** disks. Without it (or without Administrator), the cards still show the real model, capacity and media type — temperature and power-on hours simply display `N/A`.
+
+> ✅ **Confirmed on Windows:** after running `winget install smartmontools` and launching DiskPulse from an **elevated** PowerShell, the drive cards populate **temperature, power-on hours and wear** for SATA and USB disks — not just NVMe. If temps still show `N/A`, you either skipped the install or aren't running as Administrator.
+
+#### YouTube / video downloads (optional)
+
+- **ffmpeg** is needed to merge 1080p+ video and to convert audio to MP3/FLAC/WAV. Without it, video tops out at 720p (pre-muxed) and audio can only be saved as the original M4A/Opus stream.
+  - Windows: `winget install ffmpeg` (or `choco install ffmpeg`)
+  - Linux: `sudo apt install ffmpeg`
+- **"Sign in to confirm you're not a bot"** from YouTube is almost always a stale `yt-dlp`. DiskPulse mitigates this automatically by rotating player clients and reusing a signed-in browser session's cookies, but the reliable cure is to keep `yt-dlp` current:
+  - Click **Update yt-dlp** in the Add Download dialog, or run `pip install -U yt-dlp`, then restart DiskPulse.
+  - For stubborn videos (age-restricted / members-only), stay logged into YouTube in Chrome, Edge or Firefox on the same machine — DiskPulse auto-detects and uses those cookies.
 
 ### 2. Install & Run
 ```bash
