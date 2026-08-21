@@ -165,7 +165,9 @@ class DiskPulseAPI {
         mode: opts.mode || 'video',
         max_height: opts.maxHeight || 'best',
         audio_format: opts.audioFormat || 'mp3',
-        audio_bitrate: opts.audioBitrate || '192'
+        audio_bitrate: opts.audioBitrate || '192',
+        format_id: opts.formatId || '',
+        progressive: opts.progressive || false
       })
     });
   }

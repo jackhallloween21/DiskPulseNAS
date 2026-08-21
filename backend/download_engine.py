@@ -92,6 +92,8 @@ class DownloadTask:
         max_height: str = "best",
         audio_format: str = "mp3",
         audio_bitrate: str = "192",
+        format_id: str = "",
+        progressive: bool = False,
     ):
         self.task_id = task_id
         self.url = url
@@ -109,8 +111,17 @@ class DownloadTask:
         self.max_height = str(max_height or "best")
         self.audio_format = audio_format if audio_format in AUDIO_FORMATS else "mp3"
         self.audio_bitrate = str(audio_bitrate or "192")
+        #: Exact stream id chosen from the probed format list (video mode). When
+        #: set, the download requests this precise stream and only falls back to
+        #: the closest height if it has since vanished.
+        self.format_id = str(format_id or "")
+        self.progressive = bool(progressive)
         #: Which bot-check strategy actually worked, surfaced in the UI.
         self.strategy = ""
+        #: Actual delivered video height, filled in after the download completes,
+        #: so the card can show e.g. "1080p → 720p" when the exact pick wasn't
+        #: available and we fell back to the closest stream.
+        self.actual_height: Optional[int] = None
 
         # Extracted filename
         self.filename = name or self._determine_filename(url)
@@ -229,14 +240,26 @@ class DownloadTask:
         }
 
     def _quality_label(self) -> str:
-        """Short human tag for the requested quality, shown on the task row."""
+        """Short human tag for the quality, shown on the task row.
+
+        Once the download finishes we know the *actual* delivered height, so we
+        show that — and annotate "requested → actual" when we had to fall back
+        to the closest available stream.
+        """
         if self.url_kind != "youtube":
             return ""
         if self.mode == "audio":
             if self.audio_format in ("flac", "wav"):
                 return f"{self.audio_format.upper()} lossless"
             return f"{self.audio_format.upper()} {self.audio_bitrate}kbps"
-        return "Best quality" if self.max_height == "best" else f"{self.max_height}p"
+
+        requested = "Best" if self.max_height == "best" else f"{self.max_height}p"
+        if self.actual_height:
+            got = f"{self.actual_height}p"
+            if self.max_height != "best" and str(self.actual_height) != str(self.max_height):
+                return f"{requested} → {got}"   # fell back to the closest available
+            return got
+        return "Best quality" if self.max_height == "best" else requested
 
 
 class DownloadManager:
@@ -292,6 +315,8 @@ class DownloadManager:
         max_height: str = "best",
         audio_format: str = "mp3",
         audio_bitrate: str = "192",
+        format_id: str = "",
+        progressive: bool = False,
     ) -> DownloadTask:
         url = url.strip()
         if not category:
@@ -318,6 +343,8 @@ class DownloadManager:
             max_height=max_height,
             audio_format=audio_format,
             audio_bitrate=audio_bitrate,
+            format_id=format_id,
+            progressive=progressive,
         )
         self.tasks[task_id] = task
 
@@ -600,8 +627,17 @@ class DownloadManager:
                 audio_bitrate=task.audio_bitrate,
                 progress_hooks=[progress_hook],
                 on_attempt=note_attempt,
+                format_id=task.format_id or None,
+                progressive=task.progressive,
             )
             task.strategy = strategy
+
+            # Record what we actually got so the UI can flag a fallback.
+            try:
+                dl0 = (info.get("requested_downloads") or [None])[0] or {}
+                task.actual_height = info.get("height") or dl0.get("height")
+            except Exception:
+                pass
 
             # Post-processing renames the file (e.g. .webm → .mp3), so trust the
             # path yt-dlp reports rather than the pre-conversion template.
@@ -883,6 +919,8 @@ class DownloadManager:
                 max_height=old_task.max_height,
                 audio_format=old_task.audio_format,
                 audio_bitrate=old_task.audio_bitrate,
+                format_id=old_task.format_id,
+                progressive=old_task.progressive,
             ))
         return False
 

@@ -21,17 +21,28 @@ class DownloadManagerView {
     document.getElementById('btn-open-add-download')?.addEventListener('click', openModal);
     document.getElementById('quick-btn-download')?.addEventListener('click', openModal);
 
-    // Auto-reveal media options when a media/YouTube URL is entered
+    // Auto-reveal media options + auto-fetch formats when a media URL is entered
     const urlInput = document.getElementById('modal-dl-url');
     urlInput?.addEventListener('input', () => {
-      const looksMedia = this.isMediaUrl(urlInput.value.trim());
+      const val = urlInput.value.trim();
+      const looksMedia = this.isMediaUrl(val);
       const box = document.getElementById('modal-dl-media-options');
       if (box && looksMedia && box.style.display === 'none') {
         box.style.display = 'block';
       }
       // Invalidate a stale probe if the URL changed
-      if (this._probedUrl && urlInput.value.trim() !== this._probedUrl) {
+      if (this._probedUrl && val !== this._probedUrl) {
         this.clearProbePreview();
+      }
+      // Auto-fetch available formats for known media hosts (debounced so we
+      // don't fire a request on every keystroke while pasting).
+      clearTimeout(this._probeTimer);
+      if (this.isKnownMediaHost(val) && val !== this._probedUrl) {
+        this._probeTimer = setTimeout(() => {
+          if (document.getElementById('modal-dl-url').value.trim() === val) {
+            this.handleProbe({ auto: true });
+          }
+        }, 700);
       }
     });
 
@@ -71,9 +82,16 @@ class DownloadManagerView {
       const category = document.getElementById('modal-dl-category').value;
       const customDir = document.getElementById('modal-dl-custom-dir').value.trim();
       const mode = document.querySelector('.dl-mode-btn.active')?.dataset.mode || 'video';
+      const qSel = document.getElementById('modal-dl-quality');
+      const qOpt = qSel.options[qSel.selectedIndex];
       const opts = {
         mode,
-        maxHeight: document.getElementById('modal-dl-quality').value,
+        maxHeight: qSel.value,
+        // Exact stream picked from the probed list (video mode only). The
+        // backend still appends a closest-height fallback, so this never
+        // hard-fails if the stream has vanished.
+        formatId: mode === 'video' ? (qOpt?.dataset.formatId || '') : '',
+        progressive: mode === 'video' ? (qOpt?.dataset.progressive === '1') : false,
         audioFormat: document.getElementById('modal-dl-audio-format').value,
         audioBitrate: document.getElementById('modal-dl-audio-bitrate').value,
       };
@@ -107,18 +125,28 @@ class DownloadManagerView {
       || /^https?:\/\//i.test(url);  // allow any http(s); probe will confirm
   }
 
+  // Stricter check used to decide whether to AUTO-probe on paste. We only
+  // auto-fetch for well-known video/audio hosts so a plain webpage URL doesn't
+  // trigger a needless extraction; the manual "Fetch formats" button still
+  // works for anything.
+  isKnownMediaHost(url) {
+    return /^https?:\/\/[^\s]*?(youtube\.com|youtu\.be|vimeo\.com|dailymotion\.com|tiktok\.com|twitch\.tv|soundcloud\.com|reddit\.com|facebook\.com|instagram\.com|twitter\.com|x\.com)/i.test(url || '');
+  }
+
   resetDownloadModal() {
+    clearTimeout(this._probeTimer);
+    this._probing = false;
     document.getElementById('modal-dl-url').value = '';
     document.getElementById('modal-dl-custom-dir').value = '';
     document.getElementById('modal-dl-media-options').style.display = 'none';
     document.getElementById('modal-dl-quality').innerHTML = `
-      <option value="best">Best available</option>
-      <option value="2160">2160p (4K)</option>
-      <option value="1440">1440p (2K)</option>
-      <option value="1080">1080p (Full HD)</option>
-      <option value="720">720p (HD)</option>
-      <option value="480">480p</option>
-      <option value="360">360p</option>`;
+      <option value="best" data-format-id="">Best available</option>
+      <option value="2160" data-format-id="">2160p (4K)</option>
+      <option value="1440" data-format-id="">1440p (2K)</option>
+      <option value="1080" data-format-id="">1080p (Full HD)</option>
+      <option value="720" data-format-id="">720p (HD)</option>
+      <option value="480" data-format-id="">480p</option>
+      <option value="360" data-format-id="">360p</option>`;
     document.querySelectorAll('.dl-mode-btn').forEach(b => b.classList.toggle('active', b.dataset.mode === 'video'));
     document.getElementById('modal-dl-video-row').style.display = 'block';
     document.getElementById('modal-dl-audio-row').style.display = 'none';
@@ -136,9 +164,11 @@ class DownloadManagerView {
     if (warn) warn.style.display = 'none';
   }
 
-  async handleProbe() {
+  async handleProbe(opts = {}) {
     const url = document.getElementById('modal-dl-url').value.trim();
-    if (!url) { alert('Enter a URL first.'); return; }
+    if (!url) { if (!opts.auto) alert('Enter a URL first.'); return; }
+    if (this._probing) return;   // don't stack an auto-probe on a manual one
+    this._probing = true;
 
     const btn = document.getElementById('modal-dl-fetch');
     const msg = document.getElementById('modal-dl-probe-msg');
@@ -146,7 +176,7 @@ class DownloadManagerView {
     btn.disabled = true;
     btn.innerHTML = '<i data-lucide="loader"></i> Fetching…';
     if (window.lucide) lucide.createIcons();
-    if (msg) { msg.style.display = 'block'; msg.style.color = 'var(--text-dim)'; msg.textContent = 'Inspecting available formats…'; }
+    if (msg) { msg.style.display = 'block'; msg.style.color = 'var(--text-dim)'; msg.textContent = opts.auto ? 'Reading available qualities…' : 'Inspecting available formats…'; }
 
     try {
       const res = await api.probeMedia(url);
@@ -158,6 +188,7 @@ class DownloadManagerView {
     } catch (err) {
       if (msg) { msg.style.color = 'var(--accent-rose)'; msg.textContent = err.message; }
     } finally {
+      this._probing = false;
       btn.disabled = false;
       btn.innerHTML = origHtml;
       if (window.lucide) lucide.createIcons();
@@ -183,11 +214,14 @@ class DownloadManagerView {
     document.getElementById('modal-dl-meta').textContent = metaBits.join(' · ');
     preview.style.display = 'flex';
 
-    // Populate real video qualities
+    // Populate real video qualities (each carries its exact stream id so the
+    // download grabs precisely what's listed here).
     const qSel = document.getElementById('modal-dl-quality');
     if (data.video_options && data.video_options.length) {
-      qSel.innerHTML = '<option value="best">Best available</option>' +
-        data.video_options.map(o => `<option value="${o.height}">${o.display}</option>`).join('');
+      qSel.innerHTML = '<option value="best" data-format-id="">Best available</option>' +
+        data.video_options.map(o =>
+          `<option value="${o.height}" data-format-id="${o.format_id || ''}" data-progressive="${o.progressive ? 1 : 0}">${o.display}</option>`
+        ).join('');
     }
 
     // Populate audio bitrate options from what actually exists

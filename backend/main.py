@@ -75,6 +75,8 @@ class AddDownloadRequest(BaseModel):
     max_height: str = "best"       # best | 2160 | 1440 | 1080 | 720 | 480 | 360
     audio_format: str = "mp3"      # mp3 | m4a | opus | flac | wav
     audio_bitrate: str = "192"     # 320 | 256 | 192 | 128 | 96
+    format_id: str = ""            # exact yt-dlp stream id picked from the probe
+    progressive: bool = False      # True if that stream is already muxed (video+audio)
 
 class ProbeRequest(BaseModel):
     url: str
@@ -236,6 +238,8 @@ async def add_download(req: AddDownloadRequest):
         max_height=req.max_height,
         audio_format=req.audio_format,
         audio_bitrate=req.audio_bitrate,
+        format_id=req.format_id,
+        progressive=req.progressive,
     )
     return task.to_dict()
 

@@ -242,8 +242,15 @@ def build_format_selector(
     mode: str = "video",
     max_height: str = "best",
     ffmpeg: Optional[bool] = None,
+    format_id: Optional[str] = None,
+    progressive: bool = False,
 ) -> str:
     """Compose a yt-dlp format expression for the requested quality.
+
+    Every branch ends in a height-capped ``…/best`` tail so a quality that has
+    since disappeared (or that a different player client doesn't expose) falls
+    back to the *closest available* stream instead of erroring with
+    "Requested format is not available".
 
     Without ffmpeg we must stick to *progressive* (pre-muxed) streams, which
     YouTube only publishes up to 720p — anything higher is video-only DASH and
@@ -256,6 +263,25 @@ def build_format_selector(
         return "bestaudio[ext=m4a]/bestaudio/best"
 
     height = None if max_height in ("best", "", None) else str(max_height)
+
+    # Height-capped "closest available" tail, reused as the fail-safe fallback
+    # in every branch below.
+    if height:
+        tail = f"best[height<={height}][ext=mp4]/best[height<={height}]/best"
+    else:
+        tail = "best[ext=mp4]/best"
+
+    # An exact stream was chosen from the probed format list.
+    if format_id:
+        fid = str(format_id)
+        if progressive:
+            # Already muxed (video+audio) — single file, works without ffmpeg.
+            return f"{fid}/{tail}"
+        if ffmpeg:
+            # Video-only DASH stream — mux it with the best audio track.
+            return f"{fid}+bestaudio[ext=m4a]/{fid}+bestaudio/{tail}"
+        # Video-only but no ffmpeg to merge → ignore the id, grab closest progressive.
+        return tail
 
     if not ffmpeg:
         # Single-file only. Cap the request so we never pick an unmuxable stream.
@@ -339,6 +365,8 @@ def build_ydl_opts(
     cookie_browser: Optional[str] = None,
     ffmpeg: Optional[bool] = None,
     for_probe: bool = False,
+    format_id: Optional[str] = None,
+    progressive: bool = False,
 ) -> Dict[str, Any]:
     """Assemble yt-dlp options for one attempt."""
     if ffmpeg is None:
@@ -346,7 +374,7 @@ def build_ydl_opts(
 
     opts: Dict[str, Any] = {
         "outtmpl": outtmpl,
-        "format": build_format_selector(mode, max_height, ffmpeg),
+        "format": build_format_selector(mode, max_height, ffmpeg, format_id, progressive),
         "quiet": True,
         "no_warnings": True,
         "noprogress": True,
@@ -454,6 +482,8 @@ def extract_with_fallback(
     progress_hooks: Optional[List[Any]] = None,
     for_probe: bool = False,
     on_attempt: Optional[Any] = None,
+    format_id: Optional[str] = None,
+    progressive: bool = False,
 ) -> Tuple[Dict[str, Any], str]:
     """Walk the strategy ladder until one attempt succeeds.
 
@@ -486,6 +516,8 @@ def extract_with_fallback(
             cookie_browser=cookie_browser if strategy["cookies"] else None,
             ffmpeg=ffmpeg,
             for_probe=for_probe,
+            format_id=format_id,
+            progressive=progressive,
         )
 
         try:
@@ -573,6 +605,7 @@ def probe_formats(url: str) -> Dict[str, Any]:
             by_height[int(height)] = {
                 "height": int(height),
                 "label": f"{height}p",
+                "format_id": f.get("format_id"),
                 "ext": f.get("ext"),
                 "fps": f.get("fps"),
                 "vcodec": (f.get("vcodec") or "").split(".")[0],
@@ -596,6 +629,7 @@ def probe_formats(url: str) -> Dict[str, Any]:
         size = _size_of(f)
         audio_options.append({
             "abr": int(abr),
+            "format_id": f.get("format_id"),
             "ext": f.get("ext"),
             "acodec": (f.get("acodec") or "").split(".")[0],
             "size_bytes": size,
