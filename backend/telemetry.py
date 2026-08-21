@@ -5,6 +5,7 @@ import psutil
 from pathlib import Path
 import humanize
 from backend.config import STORAGE_ROOT
+from backend.drive_health import get_drive_health
 
 class TelemetryEngine:
     def __init__(self):
@@ -12,14 +13,6 @@ class TelemetryEngine:
         self.last_net_io = psutil.net_io_counters()
         self.last_time = time.time()
         self.boot_time = psutil.boot_time()
-        
-        # S.M.A.R.T. baseline simulation for drives that do not expose raw hardware sensors
-        self.mock_drive_health = {
-            "Drive_0": {"name": "NVMe System SSD (Disk 0)", "health": 99, "temp": 38.0, "poh": 4120, "reallocated": 0, "status": "Optimal"},
-            "Drive_1": {"name": "WD Red NAS HDD 4TB (Pool A)", "health": 100, "temp": 34.5, "poh": 8940, "reallocated": 0, "status": "Optimal"},
-            "Drive_2": {"name": "Seagate IronWolf 4TB (Pool A)", "health": 98, "temp": 36.2, "poh": 9120, "reallocated": 0, "status": "Optimal"},
-            "Drive_3": {"name": "Samsung 870 EVO 1TB (Cache)", "health": 97, "temp": 32.0, "poh": 5430, "reallocated": 0, "status": "Optimal"},
-        }
 
     def get_system_overview(self):
         current_time = time.time()
@@ -217,45 +210,13 @@ class TelemetryEngine:
         }
 
     def get_temperatures(self):
-        drives = []
-        # Attempt to read real sensors
-        real_temps = {}
-        if hasattr(psutil, "sensors_temperatures"):
-            try:
-                temps = psutil.sensors_temperatures()
-                if temps:
-                    for name, entries in temps.items():
-                        for entry in entries:
-                            real_temps[f"{name}_{entry.label or 'temp'}"] = entry.current
-            except Exception:
-                pass
+        """Real, cross-platform S.M.A.R.T. drive health & temperature.
 
-        # If real drive sensors found, use them
-        idx = 0
-        for drive_id, mock in self.mock_drive_health.items():
-            # Add dynamic slight fluctuation to simulated temp
-            fluct = ((int(time.time() * 2 + idx * 7) % 7) - 3) * 0.2
-            current_temp = round(mock["temp"] + fluct, 1)
-            
-            # Check alert status
-            temp_status = "Normal"
-            if current_temp >= 55:
-                temp_status = "Critical"
-            elif current_temp >= 45:
-                temp_status = "Warning"
-
-            drives.append({
-                "id": drive_id,
-                "name": mock["name"],
-                "health_percent": mock["health"],
-                "temperature_c": current_temp,
-                "temp_status": temp_status,
-                "power_on_hours": mock["poh"],
-                "reallocated_sectors": mock["reallocated"],
-                "status": mock["status"],
-            })
-            idx += 1
-
-        return drives
+        Delegates to the drive_health module which reads live data from the
+        host (PowerShell on Windows, smartctl/lsblk on Linux) with a cached,
+        background-refreshed snapshot so this stays cheap on every telemetry
+        tick.
+        """
+        return get_drive_health()
 
 telemetry_engine = TelemetryEngine()

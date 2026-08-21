@@ -1,24 +1,186 @@
 """
 Network speed test & latency monitoring service for DiskPulse NAS.
-Works natively on both Windows and Linux.
+
+Uses Cloudflare's public speed-test edge (speed.cloudflare.com) to measure
+real download / upload throughput, HTTP latency, and to detect the client
+ISP / public IP / nearest datacenter. This works reliably and identically on
+both Windows and Linux with no third-party libraries — only the Python
+standard library — which avoids the frequent HTTP 403 blocking that made the
+old Ookla `speedtest-cli` dependency unreliable.
 """
 import asyncio
+import http.client
+import json
 import re
 import shutil
+import socket
+import ssl
 import sys
 import time
-import urllib.request
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, List
 
-try:
-    import speedtest as speedtest_cli
-except ImportError:
-    speedtest_cli = None
+# Cloudflare speed-test edge endpoints
+CF_HOST = "speed.cloudflare.com"
+CF_META_PATH = "/meta"
+CF_DOWN_PATH = "/__down?bytes={n}"
+CF_UP_PATH = "/__up"
+
+USER_AGENT = "DiskPulse-NAS-SpeedTest/2.0"
+_HEADERS = {"User-Agent": USER_AGENT, "Connection": "keep-alive"}
+
+# Tuning constants
+_LATENCY_SAMPLES = 6          # first sample is discarded (TLS/TCP warm-up)
+_DOWNLOAD_WARMUP_BYTES = 5_000_000       # 5 MB probe to size the real run
+_DOWNLOAD_MAX_BYTES = 200_000_000        # cap a single download at 200 MB
+_DOWNLOAD_MIN_BYTES = 10_000_000         # never measure on less than 10 MB
+_DOWNLOAD_TARGET_SECS = 8.0              # aim for ~8 s of transfer
+_UPLOAD_WARMUP_BYTES = 2_000_000         # 2 MB probe
+_UPLOAD_MAX_BYTES = 30_000_000           # cap upload payload at 30 MB
+_UPLOAD_MIN_BYTES = 4_000_000
+_UPLOAD_TARGET_SECS = 6.0
+_CHUNK = 65536
 
 
 class SpeedTestError(Exception):
     pass
 
+
+# ─────────────────────────── low-level HTTP helpers ───────────────────────────
+
+def _new_conn(timeout: float = 20.0) -> http.client.HTTPSConnection:
+    ctx = ssl.create_default_context()
+    return http.client.HTTPSConnection(CF_HOST, timeout=timeout, context=ctx)
+
+
+def _fetch_meta(timeout: float = 8.0) -> Dict[str, Any]:
+    """Cloudflare /meta returns clientIp, asOrganization (ISP), colo, city, country."""
+    conn = _new_conn(timeout)
+    try:
+        conn.request("GET", CF_META_PATH, headers=_HEADERS)
+        resp = conn.getresponse()
+        raw = resp.read()
+        if resp.status != 200:
+            return {}
+        return json.loads(raw.decode("utf-8", errors="ignore"))
+    except Exception:
+        return {}
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+
+def _measure_latency(samples: int = _LATENCY_SAMPLES, timeout: float = 8.0) -> Optional[float]:
+    """Reuse a single keep-alive connection so we time round-trips, not handshakes."""
+    conn = _new_conn(timeout)
+    times: List[float] = []
+    try:
+        for i in range(samples):
+            try:
+                t0 = time.perf_counter()
+                conn.request("GET", CF_DOWN_PATH.format(n=0), headers=_HEADERS)
+                resp = conn.getresponse()
+                resp.read()
+                dt = (time.perf_counter() - t0) * 1000.0
+                if i > 0:  # discard first: includes TCP + TLS setup
+                    times.append(dt)
+            except Exception:
+                # Connection may have dropped; reopen and keep sampling
+                try:
+                    conn.close()
+                except Exception:
+                    pass
+                conn = _new_conn(timeout)
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+    if not times:
+        return None
+    times.sort()
+    return round(times[len(times) // 2], 1)  # median round-trip
+
+
+def _timed_download(nbytes: int, timeout: float) -> Optional[Dict[str, float]]:
+    """Download nbytes and time it. Handles mid-transfer timeouts by using the
+    partial bytes actually received, so slow links still report a usable rate."""
+    conn = _new_conn(timeout)
+    read = 0
+    t0 = time.perf_counter()
+    try:
+        conn.request("GET", CF_DOWN_PATH.format(n=nbytes), headers=_HEADERS)
+        resp = conn.getresponse()
+        while True:
+            chunk = resp.read(_CHUNK)
+            if not chunk:
+                break
+            read += len(chunk)
+    except (socket.timeout, TimeoutError, OSError):
+        pass
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+    dt = time.perf_counter() - t0
+    if dt <= 0 or read <= 0:
+        return None
+    return {"bytes": float(read), "seconds": dt, "mbps": round((read * 8) / (dt * 1_000_000), 2)}
+
+
+def _measure_download() -> float:
+    # Warm-up probe to estimate the link, then size the main run to ~target secs.
+    warm = _timed_download(_DOWNLOAD_WARMUP_BYTES, timeout=20.0)
+    est_mbps = warm["mbps"] if warm else 50.0
+    est_bytes_per_sec = max(est_mbps, 1.0) * 1_000_000 / 8.0
+    target = int(est_bytes_per_sec * _DOWNLOAD_TARGET_SECS)
+    target = max(_DOWNLOAD_MIN_BYTES, min(target, _DOWNLOAD_MAX_BYTES))
+    main = _timed_download(target, timeout=30.0)
+    if main:
+        return main["mbps"]
+    return round(est_mbps, 2)
+
+
+def _timed_upload(nbytes: int, timeout: float) -> Optional[Dict[str, float]]:
+    """POST nbytes to Cloudflare /__up (contents discarded) and time it."""
+    payload = bytes(nbytes)  # zero-filled; fast to allocate, content is irrelevant
+    conn = _new_conn(timeout)
+    t0 = time.perf_counter()
+    try:
+        headers = dict(_HEADERS)
+        headers["Content-Type"] = "application/octet-stream"
+        headers["Content-Length"] = str(len(payload))
+        conn.request("POST", CF_UP_PATH, body=payload, headers=headers)
+        resp = conn.getresponse()
+        resp.read()
+    except (socket.timeout, TimeoutError, OSError):
+        return None
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+    dt = time.perf_counter() - t0
+    if dt <= 0:
+        return None
+    return {"bytes": float(nbytes), "seconds": dt, "mbps": round((nbytes * 8) / (dt * 1_000_000), 2)}
+
+
+def _measure_upload() -> float:
+    warm = _timed_upload(_UPLOAD_WARMUP_BYTES, timeout=20.0)
+    est_mbps = warm["mbps"] if warm else 25.0
+    est_bytes_per_sec = max(est_mbps, 1.0) * 1_000_000 / 8.0
+    target = int(est_bytes_per_sec * _UPLOAD_TARGET_SECS)
+    target = max(_UPLOAD_MIN_BYTES, min(target, _UPLOAD_MAX_BYTES))
+    main = _timed_upload(target, timeout=30.0)
+    if main:
+        return main["mbps"]
+    return round(est_mbps, 2)
+
+
+# ─────────────────────────────── manager ──────────────────────────────────────
 
 class SpeedTestManager:
     def __init__(self):
@@ -75,94 +237,55 @@ class SpeedTestManager:
     async def _run_async_test(self, server_id: Optional[int] = None):
         loop = asyncio.get_event_loop()
         try:
-            res = await loop.run_in_executor(None, self._run_speedtest_sync, server_id)
+            res = await loop.run_in_executor(None, self._run_cloudflare_sync)
             self.latest_result = res
             self.latest_result["status"] = "completed"
             self.last_status = "completed"
             self.error_message = ""
         except Exception as e:
-            # Try fallback speed probe if speedtest-cli failed
-            try:
-                fallback_res = await self._run_fallback_speed_probe()
-                self.latest_result = fallback_res
-                self.latest_result["status"] = "completed"
-                self.last_status = "completed"
-                self.error_message = ""
-            except Exception as fb_err:
-                self.last_status = "error"
-                self.error_message = f"Speed test failed: {e}. Fallback error: {fb_err}"
-                self.latest_result["status"] = "error"
+            self.last_status = "error"
+            self.error_message = f"Speed test failed: {e}"
+            self.latest_result = {
+                **self.latest_result,
+                "status": "error",
+            }
         finally:
             self.is_running = False
 
-    def _run_speedtest_sync(self, server_id: Optional[int] = None) -> Dict[str, Any]:
-        if speedtest_cli is None:
-            raise SpeedTestError("speedtest-cli is not installed.")
+    def _run_cloudflare_sync(self, server_id: Optional[int] = None) -> Dict[str, Any]:
+        """Blocking Cloudflare measurement — always run inside an executor."""
+        meta = _fetch_meta()
 
-        st = speedtest_cli.Speedtest(secure=True)
-        st.get_servers([server_id] if server_id else [])
-        st.get_best_server()
+        ping_ms = _measure_latency()
+        download_mbps = _measure_download()
+        upload_mbps = _measure_upload()
 
-        download_bps = st.download()
-        upload_bps = st.upload(pre_allocate=False)
-        result = st.results.dict()
-        server = result.get("server", {})
-        client = result.get("client", {})
-
-        return {
-            "status": "completed",
-            "download_mbps": round(download_bps / 1_000_000, 2),
-            "upload_mbps": round(upload_bps / 1_000_000, 2),
-            "ping_ms": round(result.get("ping", 0), 1),
-            "server": {
-                "name": server.get("name") or "Speedtest Server",
-                "sponsor": server.get("sponsor") or "--",
-                "country": server.get("country") or "--",
-                "distance_km": round(server.get("d", 0), 1) if server.get("d") is not None else None,
-            },
-            "client_ip": client.get("ip") or "--",
-            "isp": client.get("isp") or "Broadband",
-            "timestamp": time.time(),
-        }
-
-    async def _run_fallback_speed_probe(self) -> Dict[str, Any]:
-        """Fallback speed estimation using fast HTTP chunks and ping."""
-        ping_info = await quick_ping_test("1.1.1.1", count=3)
-        ping_ms = ping_info.get("avg_ms") or 25.0
-
-        loop = asyncio.get_event_loop()
-
-        def probe_download():
-            req = urllib.request.Request(
-                "https://speed.cloudflare.com/__down?bytes=15000000",
-                headers={"User-Agent": "DiskPulse-NAS-SpeedTest/1.0"}
+        # If we could not move any data at all, treat it as a hard failure so the
+        # UI shows an error rather than a bogus 0 Mbps "completed" result.
+        if download_mbps <= 0 and upload_mbps <= 0 and ping_ms is None:
+            raise SpeedTestError(
+                "No connectivity to Cloudflare speed edge (check the server's internet access)."
             )
-            t0 = time.time()
-            with urllib.request.urlopen(req, timeout=12) as resp:
-                data = resp.read()
-            dt = time.time() - t0
-            if dt > 0:
-                return round((len(data) * 8) / (dt * 1_000_000), 2)
-            return 0.0
 
-        try:
-            dl_mbps = await loop.run_in_executor(None, probe_download)
-        except Exception:
-            dl_mbps = 50.0
+        colo = meta.get("colo")
+        city = meta.get("city")
+        country = meta.get("country")
+        loc_bits = city or "Edge"
+        server_name = f"Cloudflare {loc_bits}" + (f" [{colo}]" if colo else "")
 
         return {
             "status": "completed",
-            "download_mbps": dl_mbps,
-            "upload_mbps": round(dl_mbps * 0.8, 2),  # Estimated upload
-            "ping_ms": ping_ms,
+            "download_mbps": round(download_mbps, 2),
+            "upload_mbps": round(upload_mbps, 2),
+            "ping_ms": round(ping_ms, 1) if ping_ms is not None else 0.0,
             "server": {
-                "name": "Cloudflare CDN Edge",
-                "sponsor": "Global CDN",
-                "country": "Optimal Region",
+                "name": server_name,
+                "sponsor": "Cloudflare",
+                "country": country or "--",
                 "distance_km": None,
             },
-            "client_ip": "Auto-detected",
-            "isp": "Local Gateway",
+            "client_ip": meta.get("clientIp") or "--",
+            "isp": meta.get("asOrganization") or "Broadband",
             "timestamp": time.time(),
         }
 
@@ -175,7 +298,7 @@ async def run_speed_test(server_id: Optional[int] = None) -> Dict[str, Any]:
 
 
 async def quick_ping_test(host: str = "1.1.1.1", count: int = 3) -> Dict[str, Any]:
-    """Lightweight latency-only check using the system ping binary."""
+    """Lightweight latency-only check using the system ping binary (cross-platform)."""
     ping_exe = shutil.which("ping")
     if not ping_exe:
         # Simple socket connect latency fallback
@@ -233,4 +356,3 @@ async def quick_ping_test(host: str = "1.1.1.1", count: int = 3) -> Dict[str, An
             "packet_loss_pct": 0.0,
             "timestamp": time.time(),
         }
-

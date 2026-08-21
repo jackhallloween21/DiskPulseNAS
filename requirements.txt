@@ -8,6 +8,10 @@ psutil>=5.9.8
 pydantic>=2.6.0
 python-multipart>=0.0.9
 yt-dlp
-speedtest-cli
 libtorrent
 torrentp
+
+# Speed test uses Cloudflare's edge over the Python stdlib — no library needed.
+# For full drive S.M.A.R.T. metrics (temperature / power-on hours / health):
+#   • Linux:   install smartmontools  (e.g. `sudo apt install smartmontools`) and run with sudo
+#   • Windows: run DiskPulse as Administrator (uses built-in PowerShell storage cmdlets)
