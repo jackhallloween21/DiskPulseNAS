@@ -95,6 +95,26 @@ def _temp_status(temp: Optional[float], is_ssd: bool) -> str:
     return "Normal"
 
 
+def _ata_surface_penalty(reallocated: Optional[int], pending: Optional[int],
+                         uncorrectable: Optional[int]) -> int:
+    """Health deduction for ATA drives with surface damage.
+
+    Scales with the order of magnitude of each counter, so a drive with a
+    handful of reallocated sectors loses less health than one with thousands —
+    but any non-zero count always costs something, so a drive flagged
+    "Warning" never also shows 100% health."""
+    def decade_penalty(count: Optional[int], per_decade: int, cap: int) -> int:
+        if not count or count <= 0:
+            return 0
+        decades = len(str(int(count)))  # 1-9 -> 1, 10-99 -> 2, 100-999 -> 3, ...
+        return min(cap, per_decade * decades)
+
+    penalty = decade_penalty(reallocated, 8, 40)
+    penalty += decade_penalty(pending, 10, 30)
+    penalty += decade_penalty(uncorrectable, 10, 30)
+    return min(penalty, 90)
+
+
 def _run(cmd: List[str], timeout: float = 15.0) -> Optional[str]:
     """Run a command and return stdout, or None on any failure."""
     try:
@@ -333,6 +353,17 @@ def _collect_windows() -> List[Dict[str, Any]]:
     for d in base:
         match = _match_smart(d, smart_drives)
         if not match:
+            # smartmontools is installed but this disk didn't match any
+            # readable SMART device — typically a USB stick/enclosure that
+            # needs elevation or exposes no S.M.A.R.T. at all. Don't guess a
+            # health number; say what's missing instead.
+            if d.get("status") in ("Optimal", "OK"):
+                d["status"] = "Unknown"
+                d["health_percent"] = None
+            if not d.get("note"):
+                d["note"] = ("No S.M.A.R.T. data for this drive. Run DiskPulse as "
+                             "Administrator (USB flash drives often expose no "
+                             "S.M.A.R.T. at all).")
             continue
         enriched = False
         if match.get("temperature_c") is not None:
@@ -345,11 +376,21 @@ def _collect_windows() -> List[Dict[str, Any]]:
         if match.get("reallocated_sectors") is not None:
             d["reallocated_sectors"] = match["reallocated_sectors"]
             enriched = True
-        # Prefer smartctl's health/status when it actually read the SMART log.
-        if match.get("health_percent") is not None:
-            d["health_percent"] = match["health_percent"]
-        if match.get("status") and match["status"] in ("Warning", "Failing"):
-            d["status"] = match["status"]
+        if match.get("status") == "Unknown":
+            # smartctl saw the drive but couldn't read its SMART log (needs
+            # admin on this controller). Don't pretend we have a health %;
+            # keep a warning only if Windows itself raised one.
+            d["health_percent"] = None
+            if d.get("status") in ("Optimal", "OK"):
+                d["status"] = "Unknown"
+            if match.get("note"):
+                d["note"] = match["note"]
+        else:
+            # Prefer smartctl's health/status when it actually read the SMART log.
+            if match.get("health_percent") is not None:
+                d["health_percent"] = match["health_percent"]
+            if match.get("status") and match["status"] in ("Warning", "Failing"):
+                d["status"] = match["status"]
         if match.get("device"):
             d["device"] = match["device"]
         if enriched:
@@ -395,18 +436,33 @@ def _collect_smartctl(exe: str = "smartctl") -> List[Dict[str, Any]]:
         if dtype:
             cmd += ["-d", dtype]
         cmd.append(name)
-        raw = _run(cmd, timeout=12.0)
-        if not raw:
-            continue
-        try:
-            info = json.loads(raw)
-        except (ValueError, json.JSONDecodeError):
-            continue
+
+        # Some controllers return an incomplete identity on the first pass
+        # (drive still spun down, non-admin permission quirks), so retry once
+        # before giving up on the device.
+        info: Dict[str, Any] = {}
+        for _attempt in range(2):
+            raw = _run(cmd, timeout=12.0)
+            if not raw:
+                continue
+            try:
+                info = json.loads(raw)
+            except (ValueError, json.JSONDecodeError):
+                info = {}
+                continue
+            if info.get("model_name") or info.get("scsi_model_name") \
+                    or info.get("serial_number"):
+                break
 
         model = info.get("model_name") or info.get("scsi_model_name")
-        # No model usually means we couldn't actually read the device (perm denied).
-        if not model:
+        serial = info.get("serial_number")
+        # No identity at all means we couldn't actually read the device
+        # (perm denied) — nothing to show or to match a PowerShell entry with.
+        if not model and not serial:
             continue
+        if not model:
+            # Serial alone is still enough to match the drive later.
+            model = f"Unknown device ({serial})"
 
         protocol = (info.get("device", {}) or {}).get("protocol", "") or ""
         is_nvme = "nvme" in protocol.lower() or (info.get("device", {}) or {}).get("type") == "nvme"
@@ -429,6 +485,8 @@ def _collect_smartctl(exe: str = "smartctl") -> List[Dict[str, Any]]:
         passed = smart_status.get("passed")
 
         reallocated = None
+        pending = None
+        uncorrectable = None
         health_percent = None
 
         nvme_log = info.get("nvme_smart_health_information_log")
@@ -445,8 +503,13 @@ def _collect_smartctl(exe: str = "smartctl") -> List[Dict[str, Any]]:
         for attr in ata_attrs:
             aid = attr.get("id")
             aname = (attr.get("name") or "").lower()
+            raw_val = _to_int((attr.get("raw", {}) or {}).get("value"))
             if aid == 5 or "reallocated_sector" in aname:
-                reallocated = _to_int((attr.get("raw", {}) or {}).get("value"))
+                reallocated = raw_val
+            elif aid == 197 or "current_pending" in aname:
+                pending = raw_val
+            elif aid == 198 or "uncorrectable" in aname:
+                uncorrectable = raw_val
             # SSD lifetime / wear indicators — normalized value ≈ % life remaining
             if health_percent is None and (
                 aid in (177, 202, 231, 233) or "wear_leveling" in aname or "life" in aname
@@ -455,15 +518,43 @@ def _collect_smartctl(exe: str = "smartctl") -> List[Dict[str, Any]]:
                 if nv is not None and 0 <= nv <= 100:
                     health_percent = nv
 
-        if health_percent is None:
-            health_percent = 100 if passed else (20 if passed is False else 100)
+        surface_damage = bool((reallocated or 0) > 0 or (pending or 0) > 0
+                              or (uncorrectable or 0) > 0)
 
-        if passed is True:
-            status = "Warning" if (reallocated or 0) > 0 else "Optimal"
-        elif passed is False:
-            status = "Failing"
+        # Identity was readable but the SMART log itself was not (typically a
+        # non-admin process on a controller whose ATA pass-through needs
+        # elevation). Reporting "Optimal / 100%" here would be a guess — the
+        # drive must show as Unknown until the data can actually be read.
+        smart_unreadable = passed is None and not ata_attrs and not nvme_log
+
+        if smart_unreadable:
+            health_percent = None
+            status = "Unknown"
+            note = ("S.M.A.R.T. data could not be read from this drive "
+                    "(usually requires Administrator rights on this "
+                    "controller). Run DiskPulse as Administrator to see "
+                    "health, temperature and sector counts.")
         else:
-            status = "OK"
+            note = None
+            if health_percent is None:
+                if passed is False:
+                    health_percent = 20
+                else:
+                    # HDDs (and SSDs with no readable lifetime attribute) have
+                    # no wear figure. Derive health from the surface-damage
+                    # counters instead of claiming a flat 100% — a drive with
+                    # reallocated or pending sectors is exactly the one the
+                    # status line flags as "Warning", and the two numbers must
+                    # agree.
+                    penalty = _ata_surface_penalty(reallocated, pending, uncorrectable)
+                    health_percent = max(10, 100 - penalty)
+
+            if passed is True:
+                status = "Warning" if surface_damage else "Optimal"
+            elif passed is False:
+                status = "Failing"
+            else:
+                status = "OK"
 
         d = _base_drive(f"drive_{i}_{name.replace('/', '_')}", model)
         d.update({
@@ -477,10 +568,12 @@ def _collect_smartctl(exe: str = "smartctl") -> List[Dict[str, Any]]:
             "power_on_hours": poh,
             "reallocated_sectors": reallocated,
             "status": status,
-            "serial": info.get("serial_number"),
+            "serial": serial,
             "device": name,
             "data_source": "smartctl",
         })
+        if note:
+            d["note"] = note
         drives.append(d)
     return drives
 
@@ -579,6 +672,26 @@ def _collect_linux_lsblk() -> List[Dict[str, Any]]:
 
 # ─────────────────────────── dispatch + caching ───────────────────────────────
 
+# Health % and S.M.A.R.T. status come from different sources that can disagree
+# (PowerShell HealthStatus vs smartctl, wear attribute vs reallocated sectors),
+# which is how the dashboard ended up showing "Warning" next to a 100% health
+# bar. One reconciliation pass enforces that they always line up.
+_STATUS_HEALTH_CAPS = {"Warning": 85, "Failing": 30}
+
+
+def _reconcile_drive(d: Dict[str, Any]) -> Dict[str, Any]:
+    hp = d.get("health_percent")
+    status = d.get("status")
+    # A drive whose computed health is already poor must not be labelled OK.
+    if hp is not None and status in ("Optimal", "OK") and hp <= 40:
+        status = "Warning"
+        d["status"] = status
+    cap = _STATUS_HEALTH_CAPS.get(status)
+    if hp is not None and cap is not None and hp > cap:
+        d["health_percent"] = cap
+    return d
+
+
 def _collect_all() -> List[Dict[str, Any]]:
     try:
         if _IS_WINDOWS:
@@ -589,6 +702,7 @@ def _collect_all() -> List[Dict[str, Any]]:
             drives = []
     except Exception:
         drives = []
+    drives = [_reconcile_drive(d) for d in drives]
     if not drives:
         drives = [_placeholder()]
     return drives

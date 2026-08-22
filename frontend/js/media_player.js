@@ -131,6 +131,10 @@ class WebMediaPlayer {
 
     // Refresh Library
     document.getElementById('media-refresh-btn')?.addEventListener('click', () => this.loadMediaLibrary());
+
+    // Releasing the stream on tab close / hide (bfcache) so a lingering ffmpeg
+    // transcode doesn't keep the source file locked after the page goes away.
+    window.addEventListener('pagehide', () => this.stopPlayback());
   }
 
   /** All floating-overlay bindings for video mode. */
@@ -945,6 +949,35 @@ class WebMediaPlayer {
       ? app.previousView
       : 'files';
     if (hasApp) app.switchView(target);
+  }
+
+  /**
+   * Fully stop playback and release the server-side stream.
+   *
+   * Pausing a media element does NOT close its HTTP connection — the browser
+   * keeps the /api/media/stream socket open to hold its buffer, which keeps the
+   * ffmpeg transcode alive and the source file locked open (Windows then blocks
+   * move/rename/delete with "in use by ffmpeg", and uvicorn's Ctrl+C shutdown
+   * hangs waiting on the dangling response). Detaching the source and calling
+   * load() aborts that request, so the server sees a client disconnect and kills
+   * ffmpeg. Called whenever we leave the media view (nav change, back button, or
+   * the tab being hidden/closed).
+   */
+  stopPlayback() {
+    clearTimeout(this._hideTimer);
+    this.closeSettings();
+    [this.videoEl, this.audioEl].forEach(el => {
+      if (!el) return;
+      try {
+        el.pause();
+        // Drop subtitle <track>s (and revoke nothing — src is a URL) first.
+        Array.from(el.querySelectorAll('track')).forEach(t => t.remove());
+        el.removeAttribute('src');
+        el.load();  // aborts the in-flight fetch → server disconnect → ffmpeg dies
+      } catch (_) {}
+    });
+    this.isPlaying = false;
+    this.updatePlayButton();
   }
 
   // ------------------------------------------------------------- volume/mute

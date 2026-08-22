@@ -39,6 +39,42 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+
+@app.on_event("shutdown")
+async def _shutdown_kill_streams():
+    """Kill any ffmpeg transcodes still running when the server stops, so no
+    source file stays locked and shutdown doesn't hang on a dangling stream."""
+    try:
+        from backend.media_service import terminate_all_streams
+        n = terminate_all_streams()
+        if n:
+            print(f"Stopped {n} active media stream(s) on shutdown.")
+    except Exception:
+        pass
+
+
+@app.on_event("startup")
+async def _silence_windows_disconnect_noise():
+    """On Windows the proactor event loop logs a scary traceback every time a
+    remote end (a browser tab reloading, a killed ffmpeg child) drops a
+    connection before we close our side: a ConnectionResetError raised inside
+    ``_ProactorBasePipeTransport._call_connection_lost``. It is harmless
+    disconnect noise, not an application error — swallow exactly that case and
+    keep the default handling for everything else."""
+    if os.name != "nt":
+        return
+    loop = asyncio.get_running_loop()
+
+    def _handler(lp, context):
+        exc = context.get("exception")
+        message = context.get("message") or ""
+        if isinstance(exc, (ConnectionResetError, ConnectionAbortedError)) \
+                and "_call_connection_lost" in message:
+            return
+        lp.default_exception_handler(context)
+
+    loop.set_exception_handler(_handler)
+
 # ----------------- Request Models -----------------
 class MkdirRequest(BaseModel):
     parent_path: str = ""

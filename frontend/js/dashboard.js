@@ -272,7 +272,22 @@ class DashboardVisualizer {
 
         const healthTxt = healthKnown ? `${drive.health_percent}%` : '—';
         const healthWidth = healthKnown ? drive.health_percent : 0;
-        const healthColor = healthKnown ? 'var(--accent-emerald)' : 'var(--text-dim)';
+        // Health bar/% follow the S.M.A.R.T. status, so a Warning/Failing
+        // drive never shows a green bar next to an amber/red label.
+        let healthColor = 'var(--accent-emerald)';
+        let healthBarBg = 'var(--grad-emerald)';
+        if (drive.status === 'Warning') {
+          healthColor = 'var(--accent-amber)';
+          healthBarBg = 'var(--grad-amber)';
+        } else if (drive.status === 'Failing') {
+          healthColor = 'var(--accent-rose)';
+          healthBarBg = 'var(--grad-rose)';
+        } else if (!healthKnown) {
+          healthColor = 'var(--text-dim)';
+        }
+        const reallocTxt = (drive.reallocated_sectors && drive.reallocated_sectors > 0)
+          ? ` · <span style="color: var(--accent-amber);">${drive.reallocated_sectors} reallocated sectors</span>`
+          : '';
 
         let pohTxt = '—';
         if (pohKnown) {
@@ -292,13 +307,13 @@ class DashboardVisualizer {
             <div class="drive-header">
               <div>
                 <div class="drive-name">${drive.name}</div>
-                <div style="font-size: 0.75rem; color: var(--text-dim);">${subLine ? subLine + ' — ' : ''}S.M.A.R.T.: <strong style="color: ${statusColor};">${drive.status}</strong></div>
+                <div style="font-size: 0.75rem; color: var(--text-dim);">${subLine ? subLine + ' — ' : ''}S.M.A.R.T.: <strong style="color: ${statusColor};">${drive.status}</strong>${reallocTxt}</div>
               </div>
               <span class="drive-badge ${badgeClass}"${badgeStyle ? ' ' + badgeStyle : ''}>${badgeTxt}</span>
             </div>
 
             <div class="progress-mini" style="height: 4px;">
-              <div class="progress-mini-bar" style="width: ${healthWidth}%; background: var(--grad-emerald);"></div>
+              <div class="progress-mini-bar" style="width: ${healthWidth}%; background: ${healthBarBg};"></div>
             </div>
 
             <div class="drive-metrics">

@@ -218,6 +218,19 @@ class FileManager:
         except Exception as e:
             return {"success": False, "error": str(e)}
 
+    def _release_media_streams(self, target: Path) -> None:
+        """Kill any ffmpeg transcode still reading this file/folder.
+
+        ffmpeg opens its source with a sharing mode that makes Windows refuse
+        rename/move/delete on it ("file is in use by ffmpeg"). A live stream
+        can outlive the player view (another tab, a paused video keeping its
+        buffer connection open), so file operations release it first."""
+        try:
+            from backend.media_service import stop_streams_for_path
+            stop_streams_for_path(str(target))
+        except Exception:
+            pass
+
     def rename_item(self, rel_path: str, new_name: str) -> Dict[str, Any]:
         target = self._resolve_safe_path(rel_path)
         if not target.exists():
@@ -231,6 +244,7 @@ class FileManager:
         if destination.exists():
             return {"success": False, "error": "An item with that name already exists"}
 
+        self._release_media_streams(target)
         try:
             target.rename(destination)
             return {"success": True, "file": self._get_file_info(destination)}
@@ -424,6 +438,10 @@ class FileManager:
         if dst.exists() and dst.is_dir():
             dst = dst / src.name
 
+        # A live transcode holds the source open and would make both the
+        # same-volume rename and the cross-device delete fail on Windows.
+        self._release_media_streams(src)
+
         # Same volume: metadata-only rename, instant regardless of size.
         try:
             os.rename(src, dst)
@@ -475,6 +493,7 @@ class FileManager:
             if not target.exists() or target == self.root_dir:
                 errors.append(f"Cannot delete {rel}")
                 continue
+            self._release_media_streams(target)
             try:
                 if target.is_dir():
                     shutil.rmtree(str(target))

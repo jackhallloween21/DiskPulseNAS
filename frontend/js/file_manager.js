@@ -223,7 +223,13 @@ class FileManagerView {
       const isSelected = this.selectedPaths.has(f.path);
       const icon = this.getCategoryIcon(f.category);
       return `
-        <div class="file-item-grid ${isSelected ? 'selected' : ''}" data-path="${f.path}" onclick="fileManager.onItemClick(event, '${f.path}', ${f.is_dir}, '${f.category}')">
+        <div class="file-item-grid ${isSelected ? 'selected' : ''}" data-path="${f.path}"
+          onclick="fileManager.onItemClick(event, '${f.path}', ${f.is_dir}, '${f.category}')"
+          oncontextmenu="return fileManager.openItemMenu(event, '${f.path}', ${f.is_dir}, '${f.category}')">
+          <button class="fm-item-menu-btn" title="Actions"
+            onclick="event.stopPropagation(); fileManager.openItemMenu(event, '${f.path}', ${f.is_dir}, '${f.category}')">
+            <i data-lucide="more-vertical"></i>
+          </button>
           <div class="file-icon-wrap" style="color: ${this.getCategoryColor(f.category)};">
             <i data-lucide="${icon}"></i>
           </div>
@@ -238,7 +244,8 @@ class FileManagerView {
       const isSelected = this.selectedPaths.has(f.path);
       const icon = this.getCategoryIcon(f.category);
       return `
-        <tr class="${isSelected ? 'selected' : ''}" onclick="fileManager.onItemClick(event, '${f.path}', ${f.is_dir}, '${f.category}')">
+        <tr class="${isSelected ? 'selected' : ''}" onclick="fileManager.onItemClick(event, '${f.path}', ${f.is_dir}, '${f.category}')"
+          oncontextmenu="return fileManager.openItemMenu(event, '${f.path}', ${f.is_dir}, '${f.category}')">
           <td><input type="checkbox" ${isSelected ? 'checked' : ''} onclick="event.stopPropagation(); fileManager.toggleSelect('${f.path}');"></td>
           <td>
             <div style="display: flex; align-items: center; gap: 8px;">
@@ -282,6 +289,126 @@ class FileManagerView {
     } else {
       this.openItem(path, isDir, category);
     }
+  }
+
+  // ---- Per-item actions menu (grid ⋮ button / right-click) ----
+  // Grid cards used to offer no actions at all — copy/move/rename/delete were
+  // only reachable from list-view buttons or the bulk bar. One reusable popup
+  // serves both the ⋮ button and right-click, in both view modes.
+
+  /** Build the reusable popup once; item clicks dispatch via runItemAction(). */
+  ensureItemMenu() {
+    let menu = document.getElementById('fm-item-menu');
+    if (menu) return menu;
+    menu = document.createElement('div');
+    menu.id = 'fm-item-menu';
+    menu.className = 'fm-ctx-menu';
+    menu.innerHTML = `
+      <button data-action="open"><i data-lucide="eye"></i><span>Open</span></button>
+      <button data-action="download"><i data-lucide="download"></i><span>Download</span></button>
+      <button data-action="rename"><i data-lucide="edit-2"></i><span>Rename</span></button>
+      <button data-action="move"><i data-lucide="folder-input"></i><span>Move to…</span></button>
+      <button data-action="copy"><i data-lucide="copy"></i><span>Copy to…</span></button>
+      <div class="fm-ctx-sep"></div>
+      <button data-action="delete" class="fm-ctx-danger"><i data-lucide="trash"></i><span>Delete</span></button>
+    `;
+    document.body.appendChild(menu);
+
+    menu.addEventListener('click', (e) => {
+      const btn = e.target.closest('[data-action]');
+      if (!btn) return;
+      const target = this._ctxTarget;
+      this.closeItemMenu();
+      if (target) this.runItemAction(btn.dataset.action, target);
+    });
+    // Any click outside closes it. The opener calls stopPropagation(), so the
+    // very click that opened the menu doesn't immediately close it again.
+    document.addEventListener('click', (e) => {
+      if (menu.classList.contains('fm-ctx-on') && !menu.contains(e.target)) this.closeItemMenu();
+    });
+    document.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape') this.closeItemMenu();
+    });
+    window.addEventListener('resize', () => this.closeItemMenu());
+    window.addEventListener('scroll', () => this.closeItemMenu(), true);
+    return menu;
+  }
+
+  /** Open the actions menu for one item, anchored to the pointer. */
+  openItemMenu(event, path, isDir, category) {
+    event.preventDefault();
+    event.stopPropagation();
+    const menu = this.ensureItemMenu();
+    this._ctxTarget = { path, isDir, category };
+
+    // First row follows the item type: folders open, media plays, the rest
+    // previews; download label reflects the folder → zip path.
+    const openBtn = menu.querySelector('[data-action="open"]');
+    const dlLabel = menu.querySelector('[data-action="download"] span');
+    if (openBtn) {
+      const [icon, label] = isDir ? ['folder-open', 'Open']
+        : (category === 'video' || category === 'audio') ? ['play', 'Play']
+        : ['eye', 'Preview'];
+      openBtn.innerHTML = `<i data-lucide="${icon}"></i><span>${label}</span>`;
+    }
+    if (dlLabel) dlLabel.textContent = isDir ? 'Download as ZIP' : 'Download';
+    if (window.lucide) lucide.createIcons();
+
+    menu.classList.add('fm-ctx-on');
+    // Position once visible so offsetWidth/Height are real, then clamp so the
+    // menu never spills off the viewport edge.
+    const x = Math.min(event.clientX, window.innerWidth - menu.offsetWidth - 8);
+    const y = Math.min(event.clientY, window.innerHeight - menu.offsetHeight - 8);
+    menu.style.left = `${Math.max(8, x)}px`;
+    menu.style.top = `${Math.max(8, y)}px`;
+    return false; // suppress the native right-click menu
+  }
+
+  closeItemMenu() {
+    const menu = document.getElementById('fm-item-menu');
+    if (menu) menu.classList.remove('fm-ctx-on');
+    this._ctxTarget = null;
+  }
+
+  runItemAction(action, { path, isDir, category }) {
+    switch (action) {
+      case 'open':
+        this.openItem(path, isDir, category);
+        break;
+      case 'download':
+        this.downloadItem(path, isDir);
+        break;
+      case 'rename':
+        this.promptRename(path, path.split('/').pop());
+        break;
+      case 'move':
+        this._selectForAction(path);
+        this.openDestPicker('move');
+        break;
+      case 'copy':
+        this._selectForAction(path);
+        this.openDestPicker('copy');
+        break;
+      case 'delete': {
+        // An item inside an existing multi-selection deletes the whole
+        // selection (standard file-manager behavior); otherwise just itself.
+        const paths = (this.selectedPaths.has(path) && this.selectedPaths.size > 1)
+          ? Array.from(this.selectedPaths) : [path];
+        this.deleteTargets(paths);
+        break;
+      }
+    }
+  }
+
+  /** Point the selection at `path` — keeping a multi-selection that already
+   *  contains it — so move/copy act on exactly what the user expects. */
+  _selectForAction(path) {
+    if (!(this.selectedPaths.has(path) && this.selectedPaths.size > 1)) {
+      this.selectedPaths.clear();
+      this.selectedPaths.add(path);
+    }
+    this.updateBulkBar();
+    this.renderFiles(this.currentFiles);
   }
 
   toggleSelect(path) {
@@ -457,16 +584,27 @@ class FileManagerView {
   }
 
   async deleteSingle(path, name) {
+    await this.deleteTargets([path]);
+  }
+
+  /** Confirm + delete one or many items (list-view button and the ⋮ / right-
+   *  click menu both route here). */
+  async deleteTargets(paths) {
+    if (!paths.length) return;
+    const many = paths.length > 1;
+    const label = many ? `${paths.length} selected items` : `"${paths[0].split('/').pop()}"`;
     const ok = await this.confirmModal({
-      title: 'Delete item',
-      message: `Permanently delete "${name}"? This cannot be undone.`,
+      title: many ? 'Delete items' : 'Delete item',
+      message: `Permanently delete ${label}? This cannot be undone.`,
       confirmLabel: 'Delete',
       danger: true,
     });
     if (!ok) return;
     try {
-      await api.deleteFiles([path]);
-      this.showToast(`Deleted "${name}".`);
+      await api.deleteFiles(paths);
+      paths.forEach(p => this.selectedPaths.delete(p));
+      this.updateBulkBar();
+      this.showToast(many ? `Deleted ${paths.length} items.` : `Deleted "${paths[0].split('/').pop()}".`);
       this.refresh();
     } catch (err) {
       this.showToast(err.message);

@@ -66,6 +66,15 @@ class DiskPulseApp {
   }
 
   switchView(viewName) {
+    // Leaving the media player? Fully stop playback so the server-side ffmpeg
+    // transcode is torn down and the source file is released. A paused <video>
+    // on its own keeps the /api/media/stream connection (and the file lock)
+    // open, which blocks move/rename/delete and stalls server shutdown.
+    if (this.currentView === 'media' && viewName !== 'media' &&
+        typeof mediaPlayer !== 'undefined' && typeof mediaPlayer.stopPlayback === 'function') {
+      mediaPlayer.stopPlayback();
+    }
+
     if (viewName !== this.currentView) {
       this.previousView = this.currentView;
     }

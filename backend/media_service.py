@@ -20,12 +20,16 @@ safety-checked by the caller (file_manager._resolve_safe_path).
 """
 from __future__ import annotations
 
+import asyncio
 import json
+import os
 import re
 import shutil
 import subprocess
+import threading
+import time
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Iterator
+from typing import Any, AsyncIterator, Dict, List, Optional
 
 
 # ---- capability detection -------------------------------------------------
@@ -404,36 +408,120 @@ def build_transcode_cmd(
     return cmd
 
 
-def stream_transcode(
+# --- Live ffmpeg process registry --------------------------------------------
+# Every transcode subprocess is tracked here (with the absolute source path it
+# is reading) so it can be killed from outside the streaming task:
+#   * terminate_all_streams()  — server shutdown (Ctrl+C) releases every file
+#     and lets the in-flight streaming responses finish so uvicorn can exit.
+#   * stop_streams_for_path()  — file operations (rename/move/delete) release
+#     a specific file first; ffmpeg opens it with a sharing mode that makes
+#     Windows refuse those operations ("file is in use by ffmpeg") while a
+#     stream is alive, and a stream can outlive the player view that started
+#     it (another tab, a paused video keeping its buffer connection open).
+_ACTIVE_PROCS: "Dict[asyncio.subprocess.Process, str]" = {}
+_PROCS_LOCK = threading.Lock()
+
+
+def _register_proc(proc: "asyncio.subprocess.Process", abs_path: str) -> None:
+    with _PROCS_LOCK:
+        _ACTIVE_PROCS[proc] = os.path.normcase(os.path.abspath(abs_path))
+
+
+def _unregister_proc(proc: "asyncio.subprocess.Process") -> None:
+    with _PROCS_LOCK:
+        _ACTIVE_PROCS.pop(proc, None)
+
+
+def _kill_procs(procs: List["asyncio.subprocess.Process"], wait_seconds: float = 0.0) -> int:
+    """Kill the given processes; optionally block until they have actually
+    exited so the OS drops their file handles before the caller touches the
+    files. Safe to call from any thread. Returns how many were still running."""
+    killed: List["asyncio.subprocess.Process"] = []
+    for proc in procs:
+        try:
+            if proc.returncode is None:
+                proc.kill()
+                killed.append(proc)
+        except Exception:
+            pass
+    if wait_seconds > 0 and killed:
+        deadline = time.monotonic() + wait_seconds
+        for proc in killed:
+            # returncode is filled in by the event loop's process watcher once
+            # the kill takes effect; poll it briefly from this thread.
+            while proc.returncode is None and time.monotonic() < deadline:
+                time.sleep(0.05)
+    return len(killed)
+
+
+def terminate_all_streams() -> int:
+    """Kill every live transcode process. Returns how many were still running.
+
+    Called on server shutdown so ffmpeg releases the source files and the
+    streaming responses' ``await read()`` returns EOF, letting their generators
+    finish and uvicorn exit within the graceful-shutdown timeout."""
+    with _PROCS_LOCK:
+        procs = list(_ACTIVE_PROCS)
+        _ACTIVE_PROCS.clear()
+    return _kill_procs(procs)
+
+
+def stop_streams_for_path(abs_path: str) -> int:
+    """Kill any transcode reading ``abs_path`` (or anything inside it, when it
+    is a folder). Returns how many processes were killed.
+
+    Waits briefly for the kills to take effect so a rename/move/delete issued
+    right after doesn't still hit the Windows file lock."""
+    norm = os.path.normcase(os.path.abspath(abs_path))
+    with _PROCS_LOCK:
+        victims = [proc for proc, src in _ACTIVE_PROCS.items()
+                   if src == norm or src.startswith(norm + os.sep)]
+    return _kill_procs(victims, wait_seconds=2.0)
+
+
+async def stream_transcode(
     abs_path: str,
     audio_rel_index: int = 0,
     start_time: float = 0.0,
     video_codec: Optional[str] = None,
     chunk_size: int = 256 * 1024,
-) -> Iterator[bytes]:
+) -> AsyncIterator[bytes]:
     """Yield fragmented-MP4 bytes from ffmpeg for StreamingResponse.
 
-    The ffmpeg process is torn down when the generator is closed (client
-    disconnect / seek to a new offset), so we never leak encoders.
+    This is an *async* generator on purpose: the ffmpeg read is an awaitable,
+    so when the client goes away (seek to a new offset, player closed, tab
+    closed, server shutdown) the framework's cancellation lands directly inside
+    the ``await read()`` and the ``finally`` block kills ffmpeg immediately —
+    releasing the source file. The old sync-generator version did a blocking
+    ``read()`` on a threadpool thread that cancellation could not interrupt,
+    which leaked ffmpeg processes that kept the file locked ("in use by
+    ffmpeg") and made uvicorn's Ctrl+C shutdown time out. Every process is
+    also registered so shutdown / file operations can kill it from outside.
     """
     cmd = build_transcode_cmd(abs_path, audio_rel_index, start_time, video_codec)
-    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+    proc = await asyncio.create_subprocess_exec(
+        *cmd,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.DEVNULL,
+    )
+    _register_proc(proc, abs_path)
     try:
         assert proc.stdout is not None
         while True:
-            data = proc.stdout.read(chunk_size)
+            data = await proc.stdout.read(chunk_size)
             if not data:
                 break
             yield data
     finally:
-        if proc.poll() is None:
+        _unregister_proc(proc)
+        if proc.returncode is None:
             try:
                 proc.kill()
-            except OSError:
+            except (OSError, ProcessLookupError):
                 pass
         try:
-            if proc.stdout:
-                proc.stdout.close()
-        except OSError:
+            await proc.wait()
+        except (asyncio.CancelledError, OSError, ProcessLookupError):
+            # A second cancellation can interrupt the reap itself; the process
+            # is already killed above, so there is nothing left to do.
             pass
-        proc.wait()
