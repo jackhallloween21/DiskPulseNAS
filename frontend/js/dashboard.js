@@ -1,6 +1,22 @@
 /**
  * Dashboard & Telemetry Visualizer
  */
+
+/**
+ * Format a byte count as MB, switching to GB once it exceeds 1000 MB.
+ * Uses 1024-based units (labelled MB/GB, matching Windows + the rest of the app).
+ */
+function formatStorageSize(bytes) {
+  const n = Number(bytes);
+  if (!isFinite(n) || n <= 0) return '0 MB';
+  const mb = n / (1024 * 1024);
+  if (mb > 1000) {
+    const gb = n / (1024 * 1024 * 1024);
+    return `${gb.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} GB`;
+  }
+  return `${mb.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} MB`;
+}
+
 class DashboardVisualizer {
   constructor() {
     this.chartDiskIO = null;
@@ -110,6 +126,22 @@ class DashboardVisualizer {
             legend: {
               position: 'right',
               labels: { color: '#94a3b8', font: { family: 'Inter', size: 11 }, boxWidth: 10, padding: 8 }
+            },
+            tooltip: {
+              backgroundColor: '#0f172a',
+              titleColor: '#f8fafc',
+              bodyColor: '#cbd5e1',
+              borderColor: 'rgba(255,255,255,0.1)',
+              borderWidth: 1,
+              callbacks: {
+                label: (ctx) => {
+                  const bytes = ctx.parsed || 0;
+                  const data = (ctx.dataset && ctx.dataset.data) || [];
+                  const total = data.reduce((sum, v) => sum + (Number(v) || 0), 0);
+                  const pct = total > 0 ? ((bytes / total) * 100).toFixed(1) : '0.0';
+                  return ` ${ctx.label}: ${formatStorageSize(bytes)} (${pct}%)`;
+                }
+              }
             }
           }
         }

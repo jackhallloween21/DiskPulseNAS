@@ -62,6 +62,10 @@ class WebMediaPlayer {
     this._thumbsDead = false;      // server can't produce frames (no ffmpeg)
     this._bookmarks = this.loadBookmarks();
 
+    // Cast (Remote Playback) state
+    this._castOrigin = null;       // LAN origin media URLs use while casting
+    this._mutedBeforeCast = false;
+
     if (this.videoEl) this.videoEl.volume = 0.8;
     if (this.audioEl) this.audioEl.volume = 0.8;
 
@@ -139,6 +143,26 @@ class WebMediaPlayer {
     on('vp-btn-back', 'click', () => this.goBack());
     on('vp-btn-bookmark', 'click', () => this.toggleBookmark());
     on('vp-btn-cast', 'click', () => this.promptCast());
+
+    // Remote Playback (cast) lifecycle: while a device is connected the
+    // element's timeline drives the remote, so pausing the element would
+    // pause the cast too — silence the local speakers instead, and hand
+    // playback back to this device when the connection drops.
+    [this.videoEl, this.audioEl].forEach(el => {
+      const remote = el && el.remote;
+      if (!remote || typeof remote.addEventListener !== 'function') return;
+      remote.addEventListener('connect', () => {
+        this._mutedBeforeCast = el.muted;
+        el.muted = true;
+        this.toast('Casting to remote device');
+        this.pokeControls();
+      });
+      remote.addEventListener('disconnect', () => {
+        el.muted = this._mutedBeforeCast;
+        if (el === this.videoEl) this.endCastMode();
+        else this._castOrigin = null;
+      });
+    });
 
     // Transport
     on('vp-btn-play', 'click', () => this.togglePlay());
@@ -553,6 +577,9 @@ class WebMediaPlayer {
       restoreTo = start;
       src = api.getRawFileUrl(this.videoRelPath);
     }
+    // While casting, the remote device fetches the stream — keep it on the
+    // LAN origin resolved by promptCast() instead of the page's origin.
+    if (this._castOrigin) src = src.replace(window.location.origin, this._castOrigin);
 
     const shouldPlay = autoplay && this._pendingPlay !== false;
 
@@ -821,7 +848,8 @@ class WebMediaPlayer {
     // Match the cue timeline to the current segment: a seeked/transcoded stream
     // starts at baseTime, so cues are shifted back by the same amount.
     const offset = this.isTranscoded ? (this.baseTime || 0) : 0;
-    const src = api.getSubtitleUrl(this.videoRelPath, { ...sel, offset });
+    let src = api.getSubtitleUrl(this.videoRelPath, { ...sel, offset });
+    if (this._castOrigin) src = src.replace(window.location.origin, this._castOrigin);
     const track = document.createElement('track');
     track.kind = 'subtitles';
     track.label = sel.label || 'Subtitles';
@@ -909,10 +937,14 @@ class WebMediaPlayer {
   goBack() {
     const el = this.getActiveElement();
     if (el) el.pause();
-    const target = (window.app && app.previousView && app.previousView !== 'media')
+    // `app` is a top-level `const` in app.js, so it lives in the global
+    // lexical scope and is NOT a property of `window` — probe it with
+    // `typeof`, not `window.app` (which is always undefined).
+    const hasApp = typeof app !== 'undefined';
+    const target = (hasApp && app.previousView && app.previousView !== 'media')
       ? app.previousView
       : 'files';
-    if (window.app) app.switchView(target);
+    if (hasApp) app.switchView(target);
   }
 
   // ------------------------------------------------------------- volume/mute
@@ -1005,18 +1037,77 @@ class WebMediaPlayer {
     if (window.lucide) lucide.createIcons();
   }
 
-  /** Cast via the Remote Playback API when the browser offers it. */
-  promptCast() {
-    const v = this.videoEl;
-    if (v && v.remote && typeof v.remote.prompt === 'function') {
-      v.remote.prompt().catch(() => {});
-    } else {
+  /** Cast via the Remote Playback API when the browser offers it.
+   *
+   *  The cast device fetches the media URL itself, so when this page was
+   *  opened on localhost we first re-point the source at the server's LAN
+   *  address — `localhost` is unreachable from anywhere else on the network,
+   *  which is what made casts fail to start playing. */
+  async promptCast() {
+    const el = this.getActiveElement();
+    if (!el || !el.remote || typeof el.remote.prompt !== 'function') {
       this.toast('Casting is not supported in this browser');
+      return;
     }
+    if (!el.currentSrc) {
+      this.toast('Play something first, then cast');
+      return;
+    }
+    try {
+      await this.ensureCastOrigin();
+      if (this._castOrigin) this.switchSrcOrigin(el, this._castOrigin);
+    } catch (err) {
+      console.error('Cast setup failed:', err);
+    }
+    el.remote.prompt().catch(() => {});
+  }
+
+  /** Resolve (once) the LAN origin cast devices should fetch media from.
+   *  Only needed when the page itself is served from a loopback address. */
+  async ensureCastOrigin() {
+    if (this._castOrigin) return;
+    const host = window.location.hostname;
+    if (host !== 'localhost' && host !== '127.0.0.1' && host !== '::1') return;
+    const info = await api.getServerInfo();
+    if (!info || !info.host || info.host === '127.0.0.1') {
+      this.toast('Server has no LAN address — open DiskPulse via its network IP to cast');
+      return;
+    }
+    this._castOrigin = `http://${info.host}:${info.port || window.location.port}`;
+  }
+
+  /** Re-point the playing element at `origin` without losing its position. */
+  switchSrcOrigin(el, origin) {
+    const src = el.currentSrc || el.src;
+    if (!src || !src.startsWith(window.location.origin)) return;
+    const t = el.currentTime || 0;
+    const wasPlaying = !el.paused;
+    el.addEventListener('loadedmetadata', () => {
+      try { el.currentTime = t; } catch (_) {}
+      if (wasPlaying) el.play().catch(() => {});
+    }, { once: true });
+    el.src = src.replace(window.location.origin, origin);
+    el.load();
+  }
+
+  /** Remote playback ended: drop the LAN origin and resume locally. */
+  endCastMode() {
+    if (!this._castOrigin) return;
+    this._castOrigin = null;
+    if (this.activePlayer !== 'video' || !this.videoRelPath) return;
+    const v = this.videoEl;
+    this.loadVideoSource({
+      useStream: this.isTranscoded,
+      audioIdx: this.currentAudioIdx,
+      startTime: (this.baseTime || 0) + (v.currentTime || 0),
+      autoplay: !v.paused,
+    });
   }
 
   toast(msg) {
-    if (window.fileManager && typeof fileManager.showToast === 'function') {
+    // Same const-global caveat as goBack(): `window.fileManager` is always
+    // undefined, which used to swallow every player toast silently.
+    if (typeof fileManager !== 'undefined' && typeof fileManager.showToast === 'function') {
       fileManager.showToast(msg);
     }
   }

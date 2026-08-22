@@ -78,6 +78,11 @@ class DiskPulseAPI {
     connect();
   }
 
+  // Server Endpoints
+  async getServerInfo() {
+    return this.request('/api/server/info');
+  }
+
   // File Manager Endpoints
   async listFiles(path = "") {
     return this.request(`/api/files/list?path=${encodeURIComponent(path)}`);

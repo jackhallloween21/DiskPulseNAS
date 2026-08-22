@@ -998,6 +998,11 @@ body {
   overflow: hidden;
   display: flex;
   flex-direction: column;
+  /* The playlist column fixes the grid row height (calc(100vh - 160px));
+     without this the card stretches to match it, and in video mode — where
+     the audio box & controls are hidden — that leaves a dead strip below
+     the 16:9 video. Size to content instead. */
+  align-self: start;
 }
 
 .video-wrapper {

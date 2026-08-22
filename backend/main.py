@@ -1,6 +1,7 @@
 import os
 import asyncio
 import json
+import socket
 from pathlib import Path
 from typing import List, Optional
 
@@ -11,7 +12,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from starlette.background import BackgroundTask
 from pydantic import BaseModel
 
-from backend.config import STORAGE_ROOT, FRONTEND_DIR, TELEMETRY_INTERVAL_SECS, DEBUG
+from backend.config import STORAGE_ROOT, FRONTEND_DIR, TELEMETRY_INTERVAL_SECS, DEBUG, PORT
 from backend.telemetry import telemetry_engine
 from backend.file_manager import file_manager
 from backend.download_engine import download_manager
@@ -103,6 +104,28 @@ async def websocket_telemetry_endpoint(websocket: WebSocket):
         pass
     except Exception:
         pass
+
+# ----------------- Server Info Routes -----------------
+def _lan_ip() -> str:
+    """Best-effort LAN address other devices can reach this server on.
+
+    Used by the web player's cast button: a cast target fetches media URLs
+    itself, so a page opened on localhost needs the server's network address.
+    The UDP-connect trick picks the OS routing address without sending data.
+    """
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        try:
+            s.connect(("8.8.8.8", 80))
+            return s.getsockname()[0]
+        finally:
+            s.close()
+    except OSError:
+        return "127.0.0.1"
+
+@app.get("/api/server/info")
+async def get_server_info():
+    return {"host": _lan_ip(), "port": PORT}
 
 # ----------------- File Manager Routes -----------------
 @app.get("/api/files/list")
