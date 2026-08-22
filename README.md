@@ -17,6 +17,128 @@
 
 ---
 
+## 📸 Screenshots
+
+A quick tour of DiskPulse in action — running against **real hardware** on both Linux and Windows.
+
+### 🧭 First-Run Setup Wizard
+
+A guided, four-step wizard detects your real drives and partitions, confirms the storage path, sets your data preferences, and provisions everything on launch.
+
+![Setup wizard — drive selection](Screenshots/setup-1-select-drive.png)
+
+*Step 1 — DiskPulse auto-detects every drive and partition on the host; pick one to back your storage pool.*
+
+![Setup wizard — drive selected](Screenshots/setup-2-drive-selected.png)
+
+*Step 1 — a selected drive shows used / free / total capacity before you continue.*
+
+![Setup wizard — confirm storage path](Screenshots/setup-3-confirm-storage-path.png)
+
+*Step 2 — confirm (or rename) the storage sub-folder; a write-access test runs before proceeding.*
+
+![Setup wizard — data preferences](Screenshots/setup-4-data-preferences.png)
+
+*Step 3 — start with an empty pool, or pre-populate with demo media, documents and ISOs.*
+
+![Setup wizard — review and launch](Screenshots/setup-5-review-launch.png)
+
+*Step 4 — review the full configuration, then launch the server.*
+
+![Setup wizard — launching](Screenshots/setup-6-launching.png)
+
+*Step 4 — live provisioning: writing config, creating storage directories, and seeding data.*
+
+![Setup wizard on Windows](Screenshots/setup-select-drive-windows.png)
+
+*The same wizard on Windows — real NTFS/FAT32 volumes detected, complete with a "drive almost full" warning.*
+
+### 📊 Real-Time System & Drive Telemetry
+
+Live storage, I/O, CPU, RAM and S.M.A.R.T. health streamed over WebSockets, plus a one-click network speed test.
+
+![Dashboard telemetry overview](Screenshots/dashboard-telemetry-overview.png)
+
+*Storage pool, disk throughput, per-core CPU, RAM, a rolling disk-I/O chart, and the storage-category donut — all updating live.*
+
+![S.M.A.R.T. health on Linux](Screenshots/dashboard-smart-health-linux.png)
+
+*S.M.A.R.T. drive-health cards and the active mount-points table (Linux; virtual disks report temperature as N/A).*
+
+![S.M.A.R.T. health on Windows hardware](Screenshots/dashboard-smart-health-windows.png)
+
+*Real S.M.A.R.T. data on Windows — per-drive health, temperature and power-on hours for SATA & USB disks (via smartmontools).*
+
+![NAS speed test on Windows](Screenshots/dashboard-speed-test-windows.png)
+
+*One-click NAS network & internet speed test — download / upload / latency / ISP — above the drive-health cards.*
+
+![Mount points and partitions on Windows](Screenshots/dashboard-mount-points-windows.png)
+
+*Active mount points & partitions with per-volume usage bars and free space.*
+
+### 🗂️ Interactive Web File Manager
+
+Browse, search, and manage files with breadcrumb navigation and both grid and list views.
+
+![File manager — grid view](Screenshots/file-manager-grid-view.png)
+
+*Interactive Storage Explorer — grid view with breadcrumb navigation.*
+
+![File manager — media folder](Screenshots/file-manager-media-folder.png)
+
+*List view inside a media folder, showing size, type, modified time and permissions.*
+
+![File manager — list view](Screenshots/file-manager-list-view.png)
+
+*List view with per-file actions: preview, download, rename, move and delete.*
+
+![File manager — move item](Screenshots/file-manager-move-item.png)
+
+*Move or copy items with a destination folder-picker.*
+
+### ⚡ High-Speed Download Manager
+
+Fetch HTTP links, YouTube/video URLs and magnet/torrent links with live speed monitoring.
+
+![Download manager — add download](Screenshots/download-manager-add-download.png)
+
+*Add a download from a URL or magnet link — with a "Fetch formats" quality picker and one-click yt-dlp updater.*
+
+![Download manager — active transfer](Screenshots/download-manager-active.png)
+
+*Live aggregate speed, per-item progress, pause/resume and automatic category tagging.*
+
+### 💻 Embedded Web Terminal Shell
+
+![Embedded NAS terminal shell](Screenshots/terminal-shell.png)
+
+*A sandboxed NAS terminal with ANSI-colored output for safe file-management commands.*
+
+### 📤 Multi-Device Uploader
+
+![Uploader — drag and drop](Screenshots/uploader-drag-and-drop.png)
+
+*Drag & drop from your desktop, or scan the QR code to upload straight from your phone.*
+
+![Uploader — active upload](Screenshots/uploader-active-upload.png)
+
+*Live upload queue with per-file progress and speed.*
+
+### 🎬 In-Browser Web Media Player
+
+Powered by `ffmpeg`/`ffprobe` for audio-track switching, subtitles and on-the-fly transcoding.
+
+![Media player — audio & subtitle controls](Screenshots/media-player-audio-subtitle-controls.png)
+
+*Audio-track and subtitle selectors plus playback-speed control, alongside the media library.*
+
+![Media player — video playback](Screenshots/media-player-video-playback.png)
+
+*Streaming video playback with a frame-accurate scrub bar for large MKV movies.*
+
+---
+
 ## ⚡ Quick Start
 
 ### 1. Requirements

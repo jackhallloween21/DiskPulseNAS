@@ -49,14 +49,43 @@ def main():
 
     print_banner()
 
-    # Launch Uvicorn
-    uvicorn.run(
-        "backend.main:app",
+    # Launch Uvicorn via an explicit Server so we can intercept Ctrl+C: on the
+    # exit signal we kill any live ffmpeg transcodes FIRST, which unblocks their
+    # streaming responses (the source files stop being read/locked). Otherwise a
+    # browser tab still holding a /api/media/stream connection would keep ffmpeg
+    # alive and make uvicorn's graceful shutdown wait indefinitely.
+    class GracefulServer(uvicorn.Server):
+        def handle_exit(self, sig, frame):
+            try:
+                from backend.media_service import terminate_all_streams
+                n = terminate_all_streams()
+                if n:
+                    print(f"\nStopping {n} active media stream(s)...")
+            except Exception:
+                pass
+            return super().handle_exit(sig, frame)
+
+    config_kwargs = dict(
         host=HOST,
         port=PORT,
         log_level="info",
-        reload=False
+        reload=False,
     )
+    # Never wait more than a few seconds for a lingering stream to drain.
+    # (timeout_graceful_shutdown exists on modern uvicorn; ignore if not.)
+    try:
+        config = uvicorn.Config("backend.main:app", timeout_graceful_shutdown=5, **config_kwargs)
+    except TypeError:
+        config = uvicorn.Config("backend.main:app", **config_kwargs)
+
+    server = GracefulServer(config)
+    try:
+        server.run()
+    except KeyboardInterrupt:
+        # Raised when Ctrl+C forces the event loop down before the graceful
+        # shutdown finishes; streams were already killed in handle_exit, so
+        # just exit quietly instead of dumping a traceback.
+        pass
 
 if __name__ == "__main__":
     main()
