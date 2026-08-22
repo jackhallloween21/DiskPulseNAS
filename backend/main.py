@@ -12,7 +12,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from starlette.background import BackgroundTask
 from pydantic import BaseModel
 
-from backend.config import STORAGE_ROOT, FRONTEND_DIR, TELEMETRY_INTERVAL_SECS, DEBUG, PORT
+from backend.config import STORAGE_ROOT, FRONTEND_DIR, TELEMETRY_INTERVAL_SECS, DEBUG, PORT, folder_for_extension
 from backend.telemetry import telemetry_engine
 from backend.file_manager import file_manager
 from backend.download_engine import download_manager
@@ -115,6 +115,9 @@ class AddDownloadRequest(BaseModel):
     audio_bitrate: str = "192"     # 320 | 256 | 192 | 128 | 96
     format_id: str = ""            # exact yt-dlp stream id picked from the probe
     progressive: bool = False      # True if that stream is already muxed (video+audio)
+    sort_by_type: bool = True      # drop the finished file into a type subfolder
+    meta_title: str = ""           # probed media title, shown on the task card
+    meta_thumbnail: str = ""       # probed media thumbnail URL, shown on the card
 
 class ProbeRequest(BaseModel):
     url: str
@@ -298,31 +301,78 @@ async def stream_raw_file(path: str):
     )
 
 # ----------------- Multi-Device Uploader Routes -----------------
+def _truthy(value: str) -> bool:
+    return str(value).strip().lower() in ("1", "true", "yes", "on")
+
+
 @app.post("/api/upload")
 async def upload_files(
     target_folder: str = Form(""),
+    sort_by_type: str = Form("true"),
     files: List[UploadFile] = File(...)
 ):
-    dest_dir = file_manager._resolve_safe_path(target_folder)
-    dest_dir.mkdir(parents=True, exist_ok=True)
-    
+    """Save uploaded files under the storage root.
+
+    Two organising modes:
+      • sort_by_type ON  → each file is dropped into a type subfolder
+        (Images / Video / Audio / … / Other) nested inside ``target_folder``.
+      • sort_by_type OFF → the file's own relative path is preserved, so an
+        uploaded folder keeps its structure. Folder uploads arrive with the
+        relative path in ``UploadFile.filename`` (the browser's
+        webkitRelativePath, sent as the multipart filename).
+
+    Every destination is re-validated through ``_resolve_safe_path`` so a
+    crafted relative path can never escape the storage root.
+    """
+    sort = _truthy(sort_by_type)
+    root = str(file_manager.root_dir)
+    base_rel = (target_folder or "").strip().strip("/\\")
+
     uploaded_files = []
+    skipped = []
     for f in files:
-        safe_name = os.path.basename(f.filename or "uploaded_file")
-        file_path = dest_dir / safe_name
-        
+        # Folder uploads carry a relative path ("MyFolder/sub/file.jpg");
+        # normalise separators and split off the basename.
+        raw = (f.filename or "uploaded_file").replace("\\", "/")
+        basename = os.path.basename(raw)
+        if not basename or basename in (".", ".."):
+            basename = "uploaded_file"
+        ext = os.path.splitext(basename)[1]
+
+        if sort:
+            # Ignore any original structure; route purely by file type.
+            sub_rel = folder_for_extension(ext)
+        else:
+            # Preserve the uploaded folder's structure.
+            sub_rel = os.path.dirname(raw)
+
+        combined_rel = "/".join(p for p in (base_rel, sub_rel) if p)
+        dest_dir = file_manager._resolve_safe_path(combined_rel)
+        dest_dir.mkdir(parents=True, exist_ok=True)
+
+        file_path = dest_dir / basename
         # Handle collision by appending counter
         counter = 1
-        base, ext = os.path.splitext(safe_name)
+        stem, fext = os.path.splitext(basename)
         while file_path.exists():
-            file_path = dest_dir / f"{base}_{counter}{ext}"
+            file_path = dest_dir / f"{stem}_{counter}{fext}"
             counter += 1
+
+        # Final belt-and-braces traversal guard on the fully-resolved path.
+        if not str(file_path.resolve()).startswith(root):
+            skipped.append(raw)
+            continue
 
         contents = await f.read()
         file_path.write_bytes(contents)
         uploaded_files.append(file_manager._get_file_info(file_path))
 
-    return {"success": True, "uploaded": uploaded_files, "count": len(uploaded_files)}
+    return {
+        "success": True,
+        "uploaded": uploaded_files,
+        "count": len(uploaded_files),
+        "skipped": skipped,
+    }
 
 # ----------------- Download Manager Routes -----------------
 @app.get("/api/downloads")
@@ -343,6 +393,9 @@ async def add_download(req: AddDownloadRequest):
         audio_bitrate=req.audio_bitrate,
         format_id=req.format_id,
         progressive=req.progressive,
+        sort_by_type=req.sort_by_type,
+        meta_title=req.meta_title,
+        meta_thumbnail=req.meta_thumbnail,
     )
     return task.to_dict()
 
@@ -674,21 +727,38 @@ async def reset_configuration():
 @app.get("/")
 async def root_handler():
     """Serve setup.html if not yet configured, else the main app."""
+    # no-cache so freshly-edited markup (new buttons, etc.) is always served.
+    no_cache = {"Cache-Control": "no-cache"}
     if not is_setup_complete():
         setup_file = FRONTEND_DIR / "setup.html"
         if setup_file.exists():
-            return FileResponse(str(setup_file))
+            return FileResponse(str(setup_file), headers=no_cache)
     main_file = FRONTEND_DIR / "index.html"
     if main_file.exists():
-        return FileResponse(str(main_file))
+        return FileResponse(str(main_file), headers=no_cache)
     return JSONResponse({"error": "Frontend not found"}, status_code=404)
 
 
 # ----------------- Static Frontend Assets (CSS / JS / fonts) -----------------
+class NoCacheStaticFiles(StaticFiles):
+    """StaticFiles that asks browsers to always revalidate before reusing a file.
+
+    Sends ``Cache-Control: no-cache`` so an edited CSS/JS file is picked up on
+    the next reload instead of a stale copy being served silently from the
+    browser's heuristic cache. ETag / Last-Modified revalidation (304) still
+    works, so this stays cheap on the wire while guaranteeing freshness during
+    active development.
+    """
+    async def get_response(self, path, scope):
+        response = await super().get_response(path, scope)
+        response.headers["Cache-Control"] = "no-cache"
+        return response
+
+
 # Mount the frontend directory under /static so CSS/JS can be found,
 # AND also mount at root so /css/... and /js/... paths work directly.
 if FRONTEND_DIR.exists():
-    app.mount("/css",    StaticFiles(directory=str(FRONTEND_DIR / "css")),    name="fe_css")
-    app.mount("/js",     StaticFiles(directory=str(FRONTEND_DIR / "js")),     name="fe_js")
+    app.mount("/css",    NoCacheStaticFiles(directory=str(FRONTEND_DIR / "css")), name="fe_css")
+    app.mount("/js",     NoCacheStaticFiles(directory=str(FRONTEND_DIR / "js")),  name="fe_js")
     # Catch-all for any other static assets (images, fonts, etc.)
-    app.mount("/assets", StaticFiles(directory=str(FRONTEND_DIR)),            name="fe_assets")
+    app.mount("/assets", NoCacheStaticFiles(directory=str(FRONTEND_DIR)),         name="fe_assets")

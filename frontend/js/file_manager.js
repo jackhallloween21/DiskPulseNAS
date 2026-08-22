@@ -243,21 +243,30 @@ class FileManagerView {
     listBody.innerHTML = files.map(f => {
       const isSelected = this.selectedPaths.has(f.path);
       const icon = this.getCategoryIcon(f.category);
+      // Secondary line shown under the name on phones (where the size /
+      // modified columns are hidden) so that info isn't lost.
+      const metaBits = [];
+      if (!f.is_dir && f.size_human) metaBits.push(f.size_human);
+      if (f.modified_human) metaBits.push(f.modified_human);
+      const rowMeta = metaBits.join(' · ');
       return `
         <tr class="${isSelected ? 'selected' : ''}" onclick="fileManager.onItemClick(event, '${f.path}', ${f.is_dir}, '${f.category}')"
           oncontextmenu="return fileManager.openItemMenu(event, '${f.path}', ${f.is_dir}, '${f.category}')">
-          <td><input type="checkbox" ${isSelected ? 'checked' : ''} onclick="event.stopPropagation(); fileManager.toggleSelect('${f.path}');"></td>
-          <td>
-            <div style="display: flex; align-items: center; gap: 8px;">
-              <i data-lucide="${icon}" style="width: 16px; height: 16px; color: ${this.getCategoryColor(f.category)};"></i>
-              <strong style="color: var(--text-main);">${f.name}</strong>
+          <td class="fm-col-select"><input type="checkbox" ${isSelected ? 'checked' : ''} onclick="event.stopPropagation(); fileManager.toggleSelect('${f.path}');"></td>
+          <td class="fm-col-name">
+            <div style="display: flex; align-items: center; gap: 8px; min-width: 0;">
+              <i data-lucide="${icon}" style="width: 16px; height: 16px; flex-shrink: 0; color: ${this.getCategoryColor(f.category)};"></i>
+              <div style="min-width: 0;">
+                <strong style="color: var(--text-main);">${f.name}</strong>
+                <div class="fm-row-meta">${rowMeta}</div>
+              </div>
             </div>
           </td>
-          <td>${f.size_human}</td>
-          <td><span class="nav-badge">${f.category}</span></td>
-          <td>${f.modified_human}</td>
-          <td><code>${f.permissions}</code></td>
-          <td style="text-align: right;">
+          <td class="fm-col-size">${f.size_human}</td>
+          <td class="fm-col-type"><span class="nav-badge">${f.category}</span></td>
+          <td class="fm-col-modified">${f.modified_human}</td>
+          <td class="fm-col-perms"><code>${f.permissions}</code></td>
+          <td class="fm-col-actions" style="text-align: right;">
             <button class="btn btn-secondary btn-icon" style="width: 28px; height: 28px;" onclick="event.stopPropagation(); fileManager.openItem('${f.path}', ${f.is_dir}, '${f.category}')" title="Open / Preview">
               <i data-lucide="eye" style="width: 14px; height: 14px;"></i>
             </button>

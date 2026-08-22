@@ -6,6 +6,7 @@ class MultiDeviceUploader {
   constructor() {
     this.dropzone = document.getElementById('uploader-dropzone');
     this.fileInput = document.getElementById('uploader-file-input');
+    this.folderInput = document.getElementById('uploader-folder-input');
     this.queueContainer = document.getElementById('upload-queue-list');
     this.startBtn = document.getElementById('btn-start-upload');
 
@@ -19,13 +20,44 @@ class MultiDeviceUploader {
   bindEvents() {
     if (!this.dropzone) return;
 
-    // Dropzone clicks
+    // Dropzone body click → pick files (buttons inside stop propagation)
     this.dropzone.addEventListener('click', () => this.fileInput.click());
 
     // File input changes
     this.fileInput.addEventListener('change', (e) => {
       this.addFilesToQueue(Array.from(e.target.files));
       this.fileInput.value = '';
+    });
+
+    // Folder input changes (webkitdirectory — carries webkitRelativePath)
+    this.folderInput?.addEventListener('change', (e) => {
+      this.addFilesToQueue(Array.from(e.target.files));
+      this.folderInput.value = '';
+    });
+
+    // Explicit "Add files" / "Add folder" buttons inside the dropzone
+    document.getElementById('uploader-pick-files')?.addEventListener('click', (e) => {
+      e.stopPropagation();
+      this.fileInput.click();
+    });
+    document.getElementById('uploader-pick-folder')?.addEventListener('click', (e) => {
+      e.stopPropagation();
+      this.folderInput?.click();
+    });
+
+    // Destination chooser: Browse (folder picker) + Backup shortcut
+    document.getElementById('upload-browse-btn')?.addEventListener('click', () => {
+      const input = document.getElementById('upload-target-path');
+      folderPicker.open({
+        title: 'Choose upload folder',
+        startPath: (input?.value || '').trim(),
+        confirmLabel: 'Upload here',
+        onPick: (relPath) => { if (input) input.value = relPath; }
+      });
+    });
+    document.getElementById('upload-backup-btn')?.addEventListener('click', () => {
+      const input = document.getElementById('upload-target-path');
+      if (input) input.value = 'Backup';
     });
 
     // Drag and Drop events
@@ -102,6 +134,9 @@ class MultiDeviceUploader {
       const f = item.file;
       const sizeMB = (f.size / (1024 * 1024)).toFixed(2);
       const uploadedMB = (item.uploadedBytes / (1024 * 1024)).toFixed(2);
+      // Folder picks carry a relative path ("Album/2024/pic.jpg"); show it so the
+      // user can see the structure. Plain file picks just show the name.
+      const displayName = f.webkitRelativePath || f.name;
 
       // Status badge
       let badge = '';
@@ -167,7 +202,7 @@ class MultiDeviceUploader {
             <div style="display:flex;align-items:center;gap:12px;overflow:hidden;flex:1;">
               <i data-lucide="file" style="color:var(--accent-cyan);flex-shrink:0;"></i>
               <div style="overflow:hidden;">
-                <strong style="font-size:0.9rem;color:#fff;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;display:block;">${f.name}</strong>
+                <strong style="font-size:0.9rem;color:#fff;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;display:block;">${displayName}</strong>
                 <div style="font-size:0.75rem;color:var(--text-dim);">${sizeMB} MB · ${f.type || 'Unknown type'}</div>
               </div>
             </div>
@@ -254,6 +289,7 @@ class MultiDeviceUploader {
     if (this.isUploading) return;
 
     const targetFolder = document.getElementById('upload-target-path')?.value.trim() || '';
+    const sortByType = document.getElementById('upload-sort-type')?.checked !== false;
     const pendingItems = this.filesQueue.filter(i => i.status === 'pending');
     if (!pendingItems.length) return;
 
@@ -262,7 +298,7 @@ class MultiDeviceUploader {
 
     for (const item of pendingItems) {
       if (item.status === 'cancelled') continue;
-      await this._uploadSingleItem(item, targetFolder);
+      await this._uploadSingleItem(item, targetFolder, sortByType);
     }
 
     this.isUploading = false;
@@ -271,7 +307,7 @@ class MultiDeviceUploader {
     this.renderQueue();
   }
 
-  _uploadSingleItem(item, targetFolder) {
+  _uploadSingleItem(item, targetFolder, sortByType = true) {
     return new Promise((resolve) => {
       item.status = 'uploading';
       item.startedAt = Date.now();
@@ -283,7 +319,12 @@ class MultiDeviceUploader {
 
       const formData = new FormData();
       formData.append('target_folder', targetFolder);
-      formData.append('files', item.file);
+      formData.append('sort_by_type', sortByType ? 'true' : 'false');
+      // Send the folder-relative path (if any) as the multipart filename so the
+      // backend can preserve structure when type-sorting is off. Plain file
+      // picks have an empty webkitRelativePath, so we fall back to the name.
+      const uploadName = item.file.webkitRelativePath || item.file.name;
+      formData.append('files', item.file, uploadName);
 
       const xhr = new XMLHttpRequest();
       item.xhr = xhr;

@@ -92,8 +92,21 @@ body {
 .app-container {
   display: flex;
   height: 100vh;
+  height: 100dvh;
   width: 100vw;
   overflow: hidden;
+}
+
+/* Mobile drawer backdrop (only visible when the sidebar is open on small screens) */
+.sidebar-overlay {
+  display: none;
+  position: fixed;
+  inset: 0;
+  background: rgba(2, 6, 16, 0.55);
+  backdrop-filter: blur(2px);
+  z-index: 45;
+  opacity: 0;
+  transition: opacity 0.3s ease;
 }
 
 /* ==========================================================================
@@ -288,6 +301,8 @@ body {
   display: flex;
   align-items: center;
   gap: 16px;
+  flex: 1 1 auto;
+  min-width: 0;
 }
 
 .mobile-menu-btn {
@@ -296,6 +311,7 @@ body {
   border: none;
   color: var(--text-main);
   cursor: pointer;
+  flex-shrink: 0;
 }
 
 .view-title {
@@ -305,12 +321,22 @@ body {
   display: flex;
   align-items: center;
   gap: 8px;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.view-title i,
+.view-title svg {
+  flex-shrink: 0;
 }
 
 .topbar-right {
   display: flex;
   align-items: center;
   gap: 12px;
+  flex-shrink: 0;
 }
 
 .live-pill {
@@ -892,6 +918,16 @@ body {
   background: rgba(0, 242, 254, 0.12);
 }
 
+/* Secondary size · modified line under a filename. Redundant on desktop
+   (those columns are visible), so it's hidden until a phone hides them. */
+.fm-row-meta {
+  display: none;
+  font-size: 0.72rem;
+  color: var(--text-dim);
+  white-space: normal;
+  margin-top: 2px;
+}
+
 /* ==========================================================================
    Download Manager
    ========================================================================== */
@@ -968,6 +1004,215 @@ body {
   display: flex;
   align-items: center;
   gap: 6px;
+}
+
+.dl-task-title {
+  flex-wrap: wrap;
+  row-gap: 4px;
+  min-width: 0;
+}
+
+/* --- Add Download modal: type tabs (YouTube / Torrent / Direct Link) --- */
+#modal-add-download .modal-header {
+  border-bottom: none;
+  padding-bottom: 10px;
+}
+
+.dl-modal-tabs {
+  display: flex;
+  gap: 4px;
+  padding: 0 20px;
+  border-bottom: 1px solid var(--border-glass);
+}
+
+.dl-modal-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 10px 14px;
+  background: transparent;
+  border: none;
+  border-bottom: 2px solid transparent;
+  margin-bottom: -1px;
+  color: var(--text-dim);
+  font-size: 0.82rem;
+  font-weight: 600;
+  font-family: inherit;
+  cursor: pointer;
+  transition: color 0.15s, border-color 0.15s;
+}
+
+.dl-modal-tab svg {
+  width: 15px;
+  height: 15px;
+}
+
+.dl-modal-tab:hover {
+  color: var(--text-main);
+}
+
+.dl-modal-tab.active {
+  color: var(--accent-cyan);
+  border-bottom-color: var(--accent-cyan);
+}
+
+/* --- Torrent card: per-file progress list --- */
+.dl-card-torrent {
+  border-left: 3px solid rgba(139, 92, 246, 0.45);
+}
+
+.dl-files-section {
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border-glass);
+  border-radius: var(--radius-md);
+  overflow: hidden;
+}
+
+.dl-files-toggle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 8px 12px;
+  background: transparent;
+  border: none;
+  color: var(--text-main);
+  font-size: 0.78rem;
+  font-weight: 600;
+  font-family: inherit;
+  cursor: pointer;
+}
+
+.dl-files-toggle:hover {
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.dl-files-folder {
+  margin-left: auto;
+  font-weight: 400;
+  font-size: 0.72rem;
+  color: var(--text-dim);
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.dl-files-list {
+  display: flex;
+  flex-direction: column;
+  max-height: 260px;
+  overflow-y: auto;
+  border-top: 1px solid var(--border-glass);
+}
+
+.dl-file-row {
+  display: grid;
+  grid-template-columns: 16px minmax(0, 1fr) 120px 70px 42px;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 12px;
+  font-size: 0.75rem;
+}
+
+.dl-file-row + .dl-file-row {
+  border-top: 1px solid rgba(255, 255, 255, 0.04);
+}
+
+.dl-file-icon {
+  width: 14px;
+  height: 14px;
+  color: var(--text-dim);
+}
+
+.dl-file-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-main);
+}
+
+.dl-file-progress {
+  height: 5px;
+  background: rgba(255, 255, 255, 0.07);
+  border-radius: var(--radius-full);
+  overflow: hidden;
+}
+
+.dl-file-progress-fill {
+  height: 100%;
+  background: var(--grad-primary);
+  border-radius: var(--radius-full);
+  transition: width 0.3s ease;
+}
+
+.dl-file-progress-fill.completed {
+  background: var(--grad-emerald);
+}
+
+.dl-file-size {
+  color: var(--text-dim);
+  text-align: right;
+}
+
+.dl-file-pct {
+  color: var(--accent-cyan);
+  text-align: right;
+  font-weight: 600;
+}
+
+.dl-file-unselected {
+  opacity: 0.45;
+}
+
+.dl-file-more {
+  padding: 8px 12px;
+  font-size: 0.72rem;
+  color: var(--text-dim);
+}
+
+.dl-files-list .dl-file-more {
+  border-top: 1px solid rgba(255, 255, 255, 0.04);
+}
+
+/* --- YouTube / media card: thumbnail + picked quality --- */
+.dl-card-media {
+  border-left: 3px solid rgba(0, 242, 254, 0.4);
+}
+
+.dl-media-body {
+  display: flex;
+  gap: 14px;
+  align-items: flex-start;
+}
+
+.dl-card-thumb {
+  width: 128px;
+  height: 72px;
+  object-fit: cover;
+  border-radius: 8px;
+  flex-shrink: 0;
+  background: var(--bg-tertiary);
+}
+
+.dl-card-thumb-empty {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-dim);
+}
+
+@media (max-width: 720px) {
+  .dl-file-row {
+    grid-template-columns: 16px minmax(0, 1fr) 60px 40px;
+  }
+
+  .dl-file-progress {
+    display: none;
+  }
+
+  .dl-media-body {
+    flex-direction: column;
+  }
 }
 
 /* ==========================================================================
@@ -1854,23 +2099,229 @@ body {
   min-height: 120px;
 }
 
+/* Guard rails so long content never forces the layout wider than its
+   container (applies at every width — no desktop regression). */
+.modal-card {
+  min-width: 0;
+}
+.modal-body input,
+.modal-body select,
+.modal-body textarea {
+  max-width: 100%;
+  min-width: 0;
+  box-sizing: border-box;
+}
+/* Keep task-card action buttons at full size; the title yields space instead
+   of the buttons collapsing onto it. */
+.dl-task-actions {
+  flex-shrink: 0;
+}
+
 /* Responsive adjustments */
 @media (max-width: 768px) {
   .sidebar {
     position: fixed;
+    top: 0;
     left: -260px;
     height: 100vh;
+    height: 100dvh;
+    box-shadow: 0 0 40px rgba(0, 0, 0, 0.5);
   }
   .sidebar.mobile-open {
     transform: translateX(260px);
   }
+  /* Backdrop appears whenever the drawer is open */
+  .sidebar.mobile-open ~ .sidebar-overlay {
+    display: block;
+    opacity: 1;
+  }
   .mobile-menu-btn {
     display: block;
   }
+
+  /* Topbar: keep everything on one row and let the title truncate instead
+     of wrapping to 3 lines and shoving the actions off-screen. */
   .topbar {
-    padding: 0 16px;
+    padding: 0 14px;
+    gap: 10px;
   }
+  .view-title {
+    font-size: 1.02rem;
+  }
+  .view-title i,
+  .view-title svg {
+    width: 18px;
+    height: 18px;
+  }
+  .topbar-right {
+    gap: 8px;
+  }
+  /* Collapse the live pill to just its pulsing dot to reclaim width */
+  .live-pill {
+    padding: 7px;
+    gap: 0;
+  }
+  .live-pill #live-telemetry-status {
+    display: none;
+  }
+
   .views-container {
     padding: 16px;
+  }
+  .card {
+    padding: 16px;
+  }
+
+  /* Data tables: keep each cell on one line and scroll horizontally rather
+     than clipping the last column (e.g. the mount-points USED / TOTAL). */
+  #fm-files-list-wrapper {
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+  }
+  .fm-view-list th,
+  .fm-view-list td {
+    padding: 10px 12px;
+    font-size: 0.8rem;
+    white-space: nowrap;
+  }
+
+  /* File Manager list view: hide the low-value columns so Name + Actions fit
+     the phone without sideways scroll. Size / modified fold into a line under
+     the filename; the multi-select checkbox is dropped (tap + long-press menu
+     cover mobile). Only the file list carries .fm-col-* classes, so the
+     dashboard partitions table is untouched and still scrolls. */
+  .fm-col-select,
+  .fm-col-size,
+  .fm-col-type,
+  .fm-col-modified,
+  .fm-col-perms {
+    display: none;
+  }
+  .fm-row-meta {
+    display: block;
+  }
+  /* Higher specificity than ".fm-view-list td" so the name can wrap instead of
+     forcing the row wider than the screen. */
+  .fm-view-list td.fm-col-name {
+    white-space: normal;
+    word-break: break-word;
+  }
+  .fm-view-list td.fm-col-actions {
+    white-space: nowrap;
+  }
+
+  /* Add Download modal: reclaim viewport width so the card + its form fields
+     fit; the URL row already wraps its Fetch button under the input. */
+  .modal-backdrop {
+    padding: 12px;
+  }
+  .modal-body {
+    padding: 16px;
+  }
+
+  /* File Manager toolbar: drop the search + actions onto their own full-width
+     row under the breadcrumbs and let the search box span it (was a fixed
+     220px that pushed the whole view sideways). */
+  .fm-actions {
+    flex-wrap: wrap;
+    width: 100%;
+  }
+  .search-input-wrap {
+    flex: 1 1 100%;
+  }
+  .search-input-wrap input {
+    width: 100%;
+    box-sizing: border-box;
+  }
+  /* Belt-and-suspenders: a stray wide child can't scroll the whole view
+     sideways. Tables/breadcrumbs keep their own internal scrollers. */
+  .views-container {
+    overflow-x: hidden;
+  }
+
+  /* Download task cards: title on top, action buttons beneath — so the
+     buttons never sit on top of a long wrapped title. */
+  .dl-task-header {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 10px;
+  }
+  .dl-task-actions {
+    justify-content: flex-end;
+  }
+
+  /* Terminal header: prompt on its own line with command chips wrapping
+     beneath it instead of colliding on a single row. */
+  .terminal-header {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 10px;
+  }
+  .terminal-title {
+    white-space: normal;
+    word-break: break-word;
+  }
+  .terminal-quick-actions {
+    flex-wrap: wrap;
+  }
+
+  /* Video overlay controls: tighten padding/sizes so the transport row +
+     timestamps and the settings cluster fit a phone-width player. */
+  .vp-topbar,
+  .vp-bottom {
+    padding-left: 8px;
+    padding-right: 8px;
+  }
+  .vp-controls-row {
+    gap: 6px;
+  }
+  .vp-group {
+    gap: 2px;
+  }
+  .vp-btn {
+    width: 34px;
+    height: 34px;
+  }
+  .vp-time {
+    margin-left: 4px;
+    font-size: 0.74rem;
+  }
+}
+
+/* Extra-small phones */
+@media (max-width: 480px) {
+  .topbar {
+    padding: 0 12px;
+  }
+  .view-title {
+    font-size: 0.95rem;
+  }
+  .views-container {
+    padding: 12px;
+  }
+  .btn-icon {
+    width: 34px;
+    height: 34px;
+  }
+  /* The terminal shortcut also lives in the nav drawer — drop it here so the
+     add-download and upload shortcuts always fit alongside the title. */
+  #quick-btn-terminal {
+    display: none;
+  }
+
+  /* Tiny phones: shrink the player controls a touch more and shed the
+     playlist prev/next (still reachable from the media list) so the transport
+     row and settings cluster never overlap. */
+  .vp-btn {
+    width: 32px;
+    height: 32px;
+  }
+  .vp-btn svg {
+    width: 18px;
+    height: 18px;
+  }
+  #vp-btn-prev,
+  #vp-btn-next {
+    display: none;
   }
 }

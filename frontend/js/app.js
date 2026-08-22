@@ -37,6 +37,11 @@ class DiskPulseApp {
       document.getElementById('sidebar')?.classList.toggle('mobile-open');
     });
 
+    // Tapping the backdrop closes the drawer
+    document.getElementById('sidebar-overlay')?.addEventListener('click', () => {
+      document.getElementById('sidebar')?.classList.remove('mobile-open');
+    });
+
     // Quick Action Bar Buttons
     document.getElementById('quick-btn-terminal')?.addEventListener('click', () => {
       this.switchView('terminal');

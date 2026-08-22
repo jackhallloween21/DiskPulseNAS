@@ -204,7 +204,10 @@ class DiskPulseAPI {
         audio_format: opts.audioFormat || 'mp3',
         audio_bitrate: opts.audioBitrate || '192',
         format_id: opts.formatId || '',
-        progressive: opts.progressive || false
+        progressive: opts.progressive || false,
+        sort_by_type: opts.sortByType !== false,
+        meta_title: opts.metaTitle || '',
+        meta_thumbnail: opts.metaThumbnail || ''
       })
     });
   }

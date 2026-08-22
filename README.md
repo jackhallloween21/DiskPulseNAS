@@ -9,11 +9,25 @@
 - 📊 **Real-Time System & Drive Telemetry**: Live storage consumption, read/write IOPS, MB/s bandwidth, per-core CPU load, RAM allocation, and S.M.A.R.T. temperature health watchdog over WebSockets.
 - 🗂️ **Interactive Web File Manager**: Full-featured file browser with breadcrumb navigation, dual view (Grid & List), file creation, search, rename, move, copy, deletion, and batch ZIP archive downloads.
 - 💻 **Embedded Web Terminal Shell Widget**: Execute safe Linux/Unix file management commands (`ls`, `ll`, `cd`, `mkdir`, `mv`, `cp`, `rm`, `cat`, `echo`, `touch`, `du`, `stat`, `df`, `top`, `free`, `diskpulse`) directly from your browser with ANSI color output.
-- ⚡ **High-Speed Multi-Engine Downloader**: Download HTTP/HTTPS URLs, YouTube/video links (via `yt-dlp`), and Magnet/Torrent links (natively powered by `libtorrent` on Windows & Linux or optional Aria2) with live speed monitoring, pause/resume, category tagging, and automatic directory organization. Pick exact **video quality** (up to 4K) or extract **audio** (MP3/M4A/Opus/FLAC/WAV) with a "Fetch formats" preview, resilient anti-bot handling (player-client rotation + browser-cookie auth), and a one-click in-app **yt-dlp updater**.
+- ⚡ **High-Speed Multi-Engine Downloader**: Download HTTP/HTTPS URLs, video & media links from **1,800+ sites** — YouTube, Instagram, X/Twitter, Facebook, Vimeo, Dailymotion, TikTok, Crunchyroll & more (via `yt-dlp`), and Magnet/Torrent links (natively powered by `libtorrent` on Windows & Linux or optional Aria2) with live speed monitoring, pause/resume, and automatic **type-folder organization** into a destination you choose (a **Browse** picker or the one-tap **Backup** shortcut). Pick exact **video quality** (up to 4K) or extract **audio** (MP3/M4A/Opus/FLAC/WAV) with a "Fetch formats" preview, resilient anti-bot handling (player-client rotation + browser-cookie auth), and a one-click in-app **yt-dlp updater**. Sites that require a login (Instagram, X, Facebook) reuse your signed-in browser's cookies; DRM-protected streams (e.g. Crunchyroll premium) can't be saved.
 - 🚀 **NAS Network & Internet Speed Test**: Real-time throughput benchmark for Download Mbps, Upload Mbps, Ping latency, and ISP / datacenter detection — one-click, powered by Cloudflare's global speed edge (no external CLI required).
-- 📤 **Drag-and-Drop Multi-Device Uploader**: Upload large files seamlessly with real-time queue tracking and instant Mobile QR Pairing for phone-to-NAS uploading.
+- 📤 **Drag-and-Drop Multi-Device Uploader**: Upload individual files **or entire folders** with real-time queue tracking and instant Mobile QR Pairing for phone-to-NAS uploading. Choose any destination with a **Browse** folder-picker (or the one-tap **Backup** shortcut), and let DiskPulse auto-sort uploads into type folders — or toggle sorting off to keep a folder's original structure.
 - 🎬 **In-Browser Web Media Player**: High-fidelity audio player with animated canvas waveform visualizer, plus a streaming video player with **audio-track switching** (dual-audio MKV), **embedded & external subtitles** (SRT/ASS/VTT sidecars), and **playback-speed** controls. Powered by `ffmpeg`/`ffprobe` on the server (see [install notes](#web-media-player--dual-audio--subtitles-ffmpeg) below).
 - 🐍 **Python FastAPI Standalone Server**: Built-in 1-click NAS package generator for Docker Compose, TrueNAS SCALE, Synology DSM 7, and Systemd services.
+
+---
+
+## 🗃️ Automatic Type-Folder Organization
+
+Both the **uploader** and the **download manager** share one organizing scheme, so files land in the same place no matter how they arrive.
+
+- **Pick a destination.** Use the **Browse** button to walk your storage tree and select (or create) any folder, or tap **Backup** for a one-click `Backup/` destination. Leave it empty to use the storage root (uploads) or the `Downloads/` bucket (downloads).
+- **Sort into type folders** (on by default). Each file is dropped into a subfolder by kind — **Images, Video, Audio, Documents, Archives, Disk Images, Programs**, and **Other** for anything unmatched — nested inside the destination you chose.
+- **Toggle it off** to keep structure instead: uploading a whole folder preserves its original layout, and downloads use the classic category subfolder.
+
+Torrents (usually multi-file bundles) stay together in the destination rather than being split across type folders, and video/audio downloads bucket into **Video** / **Audio**.
+
+> **Note:** with sorting on by default, finished downloads now land in `Downloads/<Type>/` (e.g. `Downloads/Video/`) rather than the older `downloads/<category>/` layout.
 
 ---
 
@@ -173,12 +187,15 @@ python run.py
 
 > ✅ **Confirmed on Windows:** after running `winget install smartmontools` and launching DiskPulse from an **elevated** PowerShell, the drive cards populate **temperature, power-on hours and wear** for SATA and USB disks — not just NVMe. If temps still show `N/A`, you either skipped the install or aren't running as Administrator.
 
-#### YouTube / video downloads (optional)
+#### Video / media downloads — YouTube, Dailymotion & 1,800+ sites (optional)
+
+DiskPulse hands video/media links to `yt-dlp`, which supports **~1,800 sites** (YouTube, Instagram, X/Twitter, Facebook, Vimeo, Dailymotion, TikTok, Crunchyroll, …). A few notes:
 
 - **ffmpeg** is needed to merge 1080p+ video and to convert audio to MP3/FLAC/WAV. Without it, video tops out at 720p (pre-muxed) and audio can only be saved as the original M4A/Opus stream. See [Web media player — dual audio & subtitles (ffmpeg)](#web-media-player--dual-audio--subtitles-ffmpeg) below for install commands — the same `ffmpeg` install covers both features.
+- **Browser impersonation** — some sites (e.g. **Dailymotion**) require yt-dlp to mimic a real browser's TLS fingerprint, which needs the optional [`curl_cffi`](https://github.com/yt-dlp/yt-dlp#impersonation) package. It ships with `yt-dlp[default]` (already pinned in `requirements.txt`). If you see *"attempting impersonation, but none of these impersonate targets are available"*, run `pip install -U "yt-dlp[default]"` — or just click **Update yt-dlp** in the app — then restart.
 - **"Sign in to confirm you're not a bot"** from YouTube is almost always a stale `yt-dlp`. DiskPulse mitigates this automatically by rotating player clients and reusing a signed-in browser session's cookies, but the reliable cure is to keep `yt-dlp` current:
-  - Click **Update yt-dlp** in the Add Download dialog, or run `pip install -U yt-dlp`, then restart DiskPulse.
-  - For stubborn videos (age-restricted / members-only), stay logged into YouTube in Chrome, Edge or Firefox on the same machine — DiskPulse auto-detects and uses those cookies.
+  - Click **Update yt-dlp** in the Add Download dialog, or run `pip install -U "yt-dlp[default]"`, then restart DiskPulse.
+  - For stubborn videos (age-restricted / members-only) or login-only sites (Instagram, X, Facebook), stay signed into the site in Chrome, Edge or Firefox on the same machine — DiskPulse auto-detects and uses those cookies.
 
 #### Web media player — dual audio & subtitles (ffmpeg)
 
@@ -283,6 +300,7 @@ DiskPulseNAS/
 │   │   └── styles.css         # Glassmorphic dark design system
 │   └── js/
 │       ├── api.js             # REST client & WebSocket manager
+│       ├── folder_picker.js   # Reusable storage folder-picker (uploads + downloads)
 │       ├── dashboard.js       # Chart.js telemetry charts & gauges
 │       ├── file_manager.js    # Interactive file manager controller
 │       ├── download_manager.js# Download manager & speed rate visualizer

@@ -13,7 +13,7 @@ from typing import Dict, List, Optional, Any
 import humanize
 import urllib.parse
 
-from backend.config import STORAGE_ROOT, DOWNLOAD_CATEGORIES
+from backend.config import STORAGE_ROOT, DOWNLOAD_CATEGORIES, folder_for_extension
 from backend.ytdlp_service import (
     AUDIO_FORMATS,
     extract_with_fallback,
@@ -46,18 +46,82 @@ YOUTUBE_HOSTS = {
 
 VALID_BACKENDS = {"auto", "libtorrent", "aria2", "ytdlp", "aiohttp", "wget", "curl"}
 
+# File extensions that should always be fetched with the plain HTTP downloader
+# (faster + resumable), never handed to yt-dlp — even if some extractor's URL
+# pattern would happen to match them.
+_DIRECT_FILE_EXTS = (
+    ".zip", ".rar", ".7z", ".tar", ".gz", ".tgz", ".bz2", ".xz", ".zst",
+    ".iso", ".img", ".bin", ".exe", ".msi", ".dmg", ".pkg", ".deb", ".rpm", ".apk",
+    ".pdf", ".epub", ".mobi", ".doc", ".docx", ".xls", ".xlsx", ".ppt", ".pptx",
+)
+
+# Cached list of yt-dlp extractor classes (minus the catch-all "generic" one),
+# loaded once on first use. yt-dlp ships ~1,800 site extractors and matches URLs
+# purely by regex, so this needs no network access.
+_YTDLP_IES = None
+
+
+def _ytdlp_extractor_classes():
+    """Return yt-dlp's dedicated site extractors (excluding the generic fallback).
+
+    Loaded lazily and cached. Returns an empty list if yt-dlp isn't installed,
+    so classification degrades gracefully to the curated host allowlist.
+    """
+    global _YTDLP_IES
+    if _YTDLP_IES is None:
+        classes = []
+        try:
+            from yt_dlp.extractor import gen_extractor_classes
+            classes = [
+                ie for ie in gen_extractor_classes()
+                if getattr(ie, "IE_NAME", "").lower() != "generic"
+            ]
+        except Exception:
+            classes = []
+        _YTDLP_IES = classes
+    return _YTDLP_IES
+
+
+def _ytdlp_supports(url: str) -> bool:
+    """True if yt-dlp has a dedicated extractor for this URL (no network call)."""
+    try:
+        return any(ie.suitable(url) for ie in _ytdlp_extractor_classes())
+    except Exception:
+        return False
+
 
 def classify_url(url: str) -> str:
-    """Rough classification used to pick a default backend."""
+    """Pick a default engine for a URL: 'torrent', 'youtube', or 'http'.
+
+    'youtube' is a historical label that simply means "hand this to yt-dlp". It
+    now covers any of the ~1,800 sites yt-dlp has a dedicated extractor for
+    (Instagram, X/Twitter, Facebook, Vimeo, Dailymotion, Crunchyroll, TikTok,
+    Bilibili, …) — not just YouTube.
+    """
     clean_url = url.strip()
-    if clean_url.startswith("magnet:") or clean_url.lower().endswith(".torrent"):
+    low = clean_url.lower()
+    if low.startswith("magnet:") or low.endswith(".torrent"):
         return "torrent"
+
+    # Obvious direct-file downloads always take the plain HTTP path.
+    path = low.split("?")[0].split("#")[0]
+    if any(path.endswith(ext) for ext in _DIRECT_FILE_EXTS):
+        return "http"
+
     try:
         host = urllib.parse.urlparse(clean_url).netloc.lower()
-        if any(host == h or host.endswith("." + h) for h in YOUTUBE_HOSTS):
-            return "youtube"
     except Exception:
-        pass
+        host = ""
+
+    # Fast path / offline fallback: the curated host list short-circuits without
+    # loading yt-dlp's extractor table.
+    if host and any(host == h or host.endswith("." + h) for h in YOUTUBE_HOSTS):
+        return "youtube"
+
+    # Authoritative check: does yt-dlp itself claim this URL?
+    if clean_url.startswith(("http://", "https://")) and _ytdlp_supports(clean_url):
+        return "youtube"
+
     return "http"
 
 
@@ -94,11 +158,17 @@ class DownloadTask:
         audio_bitrate: str = "192",
         format_id: str = "",
         progressive: bool = False,
+        sort_by_type: bool = True,
+        meta_title: str = "",
+        meta_thumbnail: str = "",
     ):
         self.task_id = task_id
         self.url = url
         self.category = category
         self.custom_folder = custom_folder
+        #: When True the finished file is filed into a type subfolder
+        #: (Images / Video / … / Other) inside the chosen destination.
+        self.sort_by_type = bool(sort_by_type)
         self.status = "queued"  # queued, downloading, paused, completed, error, cancelled
         self.error_message = ""
 
@@ -122,6 +192,16 @@ class DownloadTask:
         #: so the card can show e.g. "1080p → 720p" when the exact pick wasn't
         #: available and we fell back to the closest stream.
         self.actual_height: Optional[int] = None
+
+        #: Media metadata captured from the probe in the UI, so the task card
+        #: can show the real title/thumbnail before yt-dlp reports anything.
+        self.meta_title = str(meta_title or "")
+        self.meta_thumbnail = str(meta_thumbnail or "")
+
+        #: Per-file progress for torrents: list of dicts with
+        #: name / path / size / done / progress / selected. Filled in by the
+        #: libtorrent + aria2 loops once (meta)data is available.
+        self.files: List[Dict[str, Any]] = []
 
         # Extracted filename
         self.filename = name or self._determine_filename(url)
@@ -178,13 +258,45 @@ class DownloadTask:
             return f"video_{int(time.time())}.mp4"
         return f"download_{int(time.time())}.bin"
 
+    def _type_subdir(self) -> Optional[str]:
+        """Type-folder name for this download, or None to skip type sorting.
+
+        Torrents are usually multi-file bundles, so they stay together in the
+        base folder rather than being split across type folders.
+        """
+        if not self.sort_by_type:
+            return None
+        if self.url_kind == "torrent":
+            return None
+        if self.url_kind == "youtube":
+            # yt-dlp jobs bucket by the chosen mode; the exact container the
+            # post-processor lands on doesn't change Video vs Audio.
+            return "Audio" if self.mode == "audio" else "Video"
+        return folder_for_extension(os.path.splitext(self.filename)[1])
+
     def _resolve_target_dir(self) -> Path:
-        root = Path(STORAGE_ROOT)
+        root = Path(STORAGE_ROOT).resolve()
+
+        # Base folder: an explicit destination (including the "Backup"
+        # shortcut) or the default "Downloads" bucket under the storage root.
         if self.custom_folder:
-            dest = (root / self.custom_folder.strip("/\\")).resolve()
+            base = (root / self.custom_folder.strip("/\\")).resolve()
+            # Never let a crafted custom folder escape the storage root.
+            if not str(base).startswith(str(root)):
+                base = root / "Downloads"
         else:
-            cat_dir = self.category.lower() if self.category else "downloads"
-            dest = root / "downloads" / cat_dir
+            base = root / "Downloads"
+
+        sub = self._type_subdir()
+        if sub:
+            dest = base / sub
+        elif not self.sort_by_type and self.category and self.category.lower() != "downloads":
+            # Legacy behaviour when type-sorting is off: keep the old category
+            # subfolder so a chosen category still lands where it used to.
+            dest = base / self.category.lower()
+        else:
+            dest = base
+
         dest.mkdir(parents=True, exist_ok=True)
         return dest
 
@@ -209,6 +321,7 @@ class DownloadTask:
             "url": self.url,
             "filename": self.filename,
             "category": self.category,
+            "url_kind": self.url_kind,  # torrent | youtube | http
             "status": self.status,
             "error_message": self.error_message,
             "backend": self.backend,
@@ -237,7 +350,32 @@ class DownloadTask:
             "audio_bitrate": self.audio_bitrate,
             "quality_label": self._quality_label(),
             "strategy": self.strategy,
+            "meta_title": self.meta_title,
+            "meta_thumbnail": self.meta_thumbnail,
+            "content_dir": self._content_rel_dir(),
+            # Per-file torrent progress. Capped so a 1000-file torrent doesn't
+            # bloat the 1s polling payload; the UI shows a "+N more" note.
+            "file_count": len(self.files),
+            "files": self.files[:200],
+            "files_truncated": len(self.files) > 200,
         }
+
+    def _content_rel_dir(self) -> str:
+        """Folder holding the downloaded content, relative to the storage root.
+
+        Multi-file torrents land in their own subfolder (target_dir/<name>/);
+        everything else sits directly in target_dir.
+        """
+        try:
+            if self.url_kind == "torrent" and len(self.files) > 1:
+                tops = {f["path"].split("/")[0] for f in self.files if f.get("path")}
+                if len(tops) == 1:
+                    rel = (self.target_dir / next(iter(tops))).relative_to(Path(STORAGE_ROOT))
+                    return str(rel).replace("\\", "/")
+            rel = self.target_dir.relative_to(Path(STORAGE_ROOT))
+            return str(rel).replace("\\", "/")
+        except Exception:
+            return str(self.target_dir)
 
     def _quality_label(self) -> str:
         """Short human tag for the quality, shown on the task row.
@@ -317,6 +455,9 @@ class DownloadManager:
         audio_bitrate: str = "192",
         format_id: str = "",
         progressive: bool = False,
+        sort_by_type: bool = True,
+        meta_title: str = "",
+        meta_thumbnail: str = "",
     ) -> DownloadTask:
         url = url.strip()
         if not category:
@@ -345,6 +486,9 @@ class DownloadManager:
             audio_bitrate=audio_bitrate,
             format_id=format_id,
             progressive=progressive,
+            sort_by_type=sort_by_type,
+            meta_title=meta_title,
+            meta_thumbnail=meta_thumbnail,
         )
         self.tasks[task_id] = task
 
@@ -461,6 +605,29 @@ class DownloadManager:
                     task.filename = st.name
                     task.target_filepath = task.target_dir / st.name
 
+                # Per-file progress once torrent metadata is available, so the
+                # UI can list every member file with its own progress bar.
+                ti = handle.torrent_file()
+                if ti is not None:
+                    try:
+                        fp = handle.file_progress()
+                        fs = ti.files()
+                        files = []
+                        for i in range(fs.num_files()):
+                            size = fs.file_size(i)
+                            done = int(fp[i]) if i < len(fp) else 0
+                            files.append({
+                                "name": fs.file_name(i),
+                                "path": fs.file_path(i).replace("\\", "/"),
+                                "size": size,
+                                "done": done,
+                                "progress": round(done / size * 100.0, 1) if size > 0 else 100.0,
+                                "selected": True,
+                            })
+                        task.files = files
+                    except Exception:
+                        pass
+
                 if task.total_bytes > 0 and task.speed_bytes_sec > 0:
                     remaining = task.total_bytes - task.downloaded_bytes
                     if remaining > 0:
@@ -475,6 +642,9 @@ class DownloadManager:
                     if st.name:
                         task.filename = st.name
                         task.target_filepath = task.target_dir / st.name
+                    for f in task.files:
+                        f["done"] = f["size"]
+                        f["progress"] = 100.0
                     return
 
                 await asyncio.sleep(1.0)
@@ -536,6 +706,29 @@ class DownloadManager:
                 task.speed_bytes_sec = float(status.get("downloadSpeed") or 0)
                 task.peers = int(status.get("numPeers") or 0)
                 task.seeds = int(status.get("numSeeders") or 0)
+
+                # Per-file progress — aria2 reports every member file of a
+                # multi-file torrent with its own length/completedLength.
+                raw_files = status.get("files") or []
+                if raw_files:
+                    files = []
+                    for rf in raw_files:
+                        rpath = rf.get("path") or ""
+                        try:
+                            rel = os.path.relpath(rpath, str(task.target_dir)).replace("\\", "/")
+                        except Exception:
+                            rel = os.path.basename(rpath)
+                        size = int(rf.get("length") or 0)
+                        done = int(rf.get("completedLength") or 0)
+                        files.append({
+                            "name": os.path.basename(rpath),
+                            "path": rel,
+                            "size": size,
+                            "done": done,
+                            "progress": round(done / size * 100.0, 1) if size > 0 else 100.0,
+                            "selected": rf.get("selected") == "true",
+                        })
+                    task.files = files
 
                 if task.total_bytes > 0:
                     task.progress_percent = min(100.0, task.downloaded_bytes / task.total_bytes * 100.0)
@@ -782,6 +975,15 @@ class DownloadManager:
                             task.filename = final_base
                             task.target_filepath = task.target_dir / final_base
 
+                    # Now that the real filename (hence extension) is known,
+                    # re-file into the correct type folder — but only for a
+                    # fresh download, so an in-progress resume keeps its path.
+                    if task.sort_by_type and resume_offset == 0:
+                        new_dir = task._resolve_target_dir()
+                        if new_dir != task.target_dir:
+                            task.target_dir = new_dir
+                            task.target_filepath = new_dir / task.filename
+
                     content_length = resp.headers.get("Content-Length")
                     if content_length:
                         task.total_bytes = int(content_length) + resume_offset
@@ -921,6 +1123,9 @@ class DownloadManager:
                 audio_bitrate=old_task.audio_bitrate,
                 format_id=old_task.format_id,
                 progressive=old_task.progressive,
+                sort_by_type=old_task.sort_by_type,
+                meta_title=old_task.meta_title,
+                meta_thumbnail=old_task.meta_thumbnail,
             ))
         return False
 

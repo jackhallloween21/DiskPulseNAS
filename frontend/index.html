@@ -92,6 +92,9 @@
       </div>
     </aside>
 
+    <!-- Tap-to-close backdrop for the mobile nav drawer -->
+    <div class="sidebar-overlay" id="sidebar-overlay"></div>
+
     <!-- ================= Main Wrapper ================= -->
     <main class="main-wrapper">
       <!-- Topbar -->
@@ -399,13 +402,13 @@
             <table class="fm-view-list">
               <thead>
                 <tr>
-                  <th style="width: 40px;"><input type="checkbox" id="fm-select-all-checkbox"></th>
-                  <th>Name</th>
-                  <th>Size</th>
-                  <th>Type</th>
-                  <th>Modified</th>
-                  <th>Permissions</th>
-                  <th style="text-align: right;">Actions</th>
+                  <th class="fm-col-select" style="width: 40px;"><input type="checkbox" id="fm-select-all-checkbox"></th>
+                  <th class="fm-col-name">Name</th>
+                  <th class="fm-col-size">Size</th>
+                  <th class="fm-col-type">Type</th>
+                  <th class="fm-col-modified">Modified</th>
+                  <th class="fm-col-perms">Permissions</th>
+                  <th class="fm-col-actions" style="text-align: right;">Actions</th>
                 </tr>
               </thead>
               <tbody id="fm-files-list-tbody"></tbody>
@@ -417,17 +420,22 @@
         <section class="view-panel" id="view-downloads">
           <div class="filemanager-toolbar">
             <div style="display: flex; gap: 8px; flex-wrap: wrap;">
-              <button class="btn btn-primary" id="btn-open-add-download">
-                <i data-lucide="plus-circle"></i> Add URL / Magnet Link
+              <button class="btn btn-primary" id="btn-add-youtube">
+                <i data-lucide="clapperboard"></i> Add Video / Media
+              </button>
+              <button class="btn btn-secondary" id="btn-add-torrent">
+                <i data-lucide="magnet"></i> Add Torrent
+              </button>
+              <button class="btn btn-secondary" id="btn-add-link">
+                <i data-lucide="link"></i> Add Direct Link
               </button>
             </div>
 
-            <div class="dl-category-filters" style="display: flex; gap: 6px;">
-              <button class="btn btn-secondary btn-sm active" data-cat="all">All</button>
-              <button class="btn btn-secondary btn-sm" data-cat="media">Media</button>
-              <button class="btn btn-secondary btn-sm" data-cat="iso">ISOs</button>
-              <button class="btn btn-secondary btn-sm" data-cat="documents">Docs</button>
-              <button class="btn btn-secondary btn-sm" data-cat="software">Software</button>
+            <div class="dl-type-filters" style="display: flex; gap: 6px;">
+              <button class="btn btn-secondary btn-sm active" data-kind="all">All</button>
+              <button class="btn btn-secondary btn-sm" data-kind="torrent">Torrents</button>
+              <button class="btn btn-secondary btn-sm" data-kind="youtube">Video / Media</button>
+              <button class="btn btn-secondary btn-sm" data-kind="http">Direct Links</button>
             </div>
           </div>
 
@@ -453,7 +461,7 @@
           <div class="dl-tasks-container" id="dl-tasks-container">
             <div style="text-align: center; padding: 48px; color: var(--text-dim);">
               <i data-lucide="download-cloud" style="width: 48px; height: 48px; margin-bottom: 12px; opacity: 0.5;"></i>
-              <p>No active downloads. Click "Add URL / Magnet Link" to start a download.</p>
+              <p>No active downloads. Add a video/media link, torrent, or direct link above to get started.</p>
             </div>
           </div>
         </section>
@@ -645,17 +653,34 @@
 
             <div class="form-group">
               <label class="form-label">Target Storage Folder</label>
-              <input type="text" class="form-input" id="upload-target-path"
-                placeholder="Leave empty for root or e.g. Movies, Music, Documents">
+              <div style="display: flex; flex-wrap: wrap; gap: 8px; align-items: center;">
+                <input type="text" class="form-input" id="upload-target-path"
+                  placeholder="Storage root — click Browse to choose a folder"
+                  style="flex: 1 1 200px; min-width: 0;">
+                <button type="button" class="btn btn-secondary" id="upload-browse-btn" style="flex-shrink: 0;">
+                  <i data-lucide="folder-search"></i> Browse
+                </button>
+                <button type="button" class="btn btn-secondary" id="upload-backup-btn" style="flex-shrink: 0;">
+                  <i data-lucide="shield"></i> Backup
+                </button>
+              </div>
+              <label style="display: flex; align-items: flex-start; gap: 8px; margin-top: 10px; font-size: 0.83rem; color: var(--text-muted); cursor: pointer;">
+                <input type="checkbox" id="upload-sort-type" checked
+                  style="width: 16px; height: 16px; margin-top: 1px; accent-color: var(--accent-cyan); cursor: pointer; flex-shrink: 0;">
+                <span>Sort into type folders (Images, Video, Audio, Documents, Archives, Disk&nbsp;Images, Programs, Other). Uncheck to keep a folder's original structure.</span>
+              </label>
             </div>
 
             <div class="uploader-dropzone" id="uploader-dropzone">
               <input type="file" id="uploader-file-input" multiple style="display: none;">
+              <input type="file" id="uploader-folder-input" webkitdirectory directory multiple style="display: none;">
               <i data-lucide="cloud-upload" class="dropzone-icon"></i>
               <h3 style="font-size: 1.1rem; font-weight: 600; margin-bottom: 6px;">Drag & Drop files here</h3>
-              <p style="font-size: 0.85rem; color: var(--text-muted);">or <span
-                  style="color: var(--accent-cyan); font-weight: 600; text-decoration: underline;">browse from your
-                  computer</span></p>
+              <p style="font-size: 0.85rem; color: var(--text-muted);">or use the buttons below</p>
+              <div style="margin-top: 14px; display: flex; gap: 10px; justify-content: center; flex-wrap: wrap;">
+                <button type="button" class="btn btn-secondary btn-sm" id="uploader-pick-files"><i data-lucide="file-plus"></i> Add files</button>
+                <button type="button" class="btn btn-secondary btn-sm" id="uploader-pick-folder"><i data-lucide="folder-plus"></i> Add folder</button>
+              </div>
             </div>
           </div>
 
@@ -742,19 +767,41 @@
         <h3 class="modal-title"><i data-lucide="download-cloud"></i> Add New Download</h3>
         <button class="btn btn-secondary btn-icon modal-close"><i data-lucide="x"></i></button>
       </div>
+
+      <!-- Download type tabs — each type gets its own form -->
+      <div class="dl-modal-tabs">
+        <button type="button" class="dl-modal-tab active" data-dltab="youtube">
+          <i data-lucide="clapperboard"></i> Video / Media
+        </button>
+        <button type="button" class="dl-modal-tab" data-dltab="torrent">
+          <i data-lucide="magnet"></i> Torrent
+        </button>
+        <button type="button" class="dl-modal-tab" data-dltab="link">
+          <i data-lucide="link"></i> Direct Link
+        </button>
+      </div>
+
       <div class="modal-body">
-        <div class="form-group">
-          <label class="form-label">Download URL or Magnet URI</label>
-          <div style="display: flex; gap: 8px;">
-            <input type="text" class="form-input" id="modal-dl-url" style="flex: 1;"
-              placeholder="https://example.com/file.iso, magnet:?xt=..., or a YouTube link">
-            <button class="btn btn-secondary" id="modal-dl-fetch" title="Fetch available video/audio qualities">
-              <i data-lucide="search"></i> Fetch formats
-            </button>
+        <!-- ===== Video / Media pane (yt-dlp: 1,800+ sites) ===== -->
+        <div class="dl-modal-pane" id="dl-pane-youtube">
+          <div class="form-group">
+            <label class="form-label">Video URL</label>
+            <div style="display: flex; gap: 8px; flex-wrap: wrap;">
+              <input type="text" class="form-input" id="modal-dl-url" style="flex: 1 1 180px; min-width: 0;"
+                placeholder="Paste a link — YouTube, Instagram, X, Vimeo, TikTok, Reddit… (1,800+ sites)">
+              <button class="btn btn-secondary" id="modal-dl-fetch" title="Fetch available video/audio qualities">
+                <i data-lucide="search"></i> Fetch formats
+              </button>
+            </div>
+            <div id="modal-dl-probe-msg"
+              style="font-size: 0.75rem; color: var(--text-dim); margin-top: 6px; display: none;"></div>
+            <div style="font-size: 0.72rem; color: var(--text-dim); margin-top: 6px; line-height: 1.5;">
+              <i data-lucide="info" style="width: 12px; height: 12px; vertical-align: -1px;"></i>
+              Works with YouTube, Instagram, X, Facebook, Vimeo, Dailymotion, TikTok, Reddit, Twitch, SoundCloud
+              &amp; 1,800+ more via <code>yt-dlp</code>. Login-only or DRM-protected videos may need you signed in
+              on this machine (DiskPulse reuses your browser cookies).
+            </div>
           </div>
-          <div id="modal-dl-probe-msg"
-            style="font-size: 0.75rem; color: var(--text-dim); margin-top: 6px; display: none;"></div>
-        </div>
 
         <!-- Media preview + quality picker (revealed for media links / after probe) -->
         <div id="modal-dl-media-options" style="display: none;">
@@ -823,8 +870,67 @@
           </div>
         </div>
 
+          <!-- yt-dlp health / update strip -->
+          <div id="modal-dl-ytdlp-strip"
+            style="display: none; align-items: center; justify-content: space-between; gap: 10px; font-size: 0.72rem; color: var(--text-dim); border-top: 1px solid rgba(255,255,255,0.06); padding-top: 10px; margin-top: 4px;">
+            <span id="modal-dl-ytdlp-status">Checking yt-dlp…</span>
+            <button class="btn btn-secondary btn-sm" id="modal-dl-ytdlp-update" style="display: none;"><i
+                data-lucide="refresh-cw"></i> Update yt-dlp</button>
+          </div>
+        </div>
+
+        <!-- ===== Torrent pane ===== -->
+        <div class="dl-modal-pane" id="dl-pane-torrent" style="display: none;">
+          <div class="form-group">
+            <label class="form-label">Magnet Link or .torrent URL</label>
+            <input type="text" class="form-input" id="modal-dl-torrent-url"
+              placeholder="magnet:?xt=urn:btih:… or https://example.com/file.torrent">
+            <div style="font-size: 0.72rem; color: var(--text-dim); margin-top: 8px; line-height: 1.5;">
+              <i data-lucide="info" style="width: 12px; height: 12px; display: inline; vertical-align: -1px;"></i>
+              Multi-file torrents list every member file inside the download card with its own progress bar.
+              Uses the built-in BitTorrent engine (aria2c daemon as fallback when configured).
+            </div>
+          </div>
+        </div>
+
+        <!-- ===== Direct Link pane ===== -->
+        <div class="dl-modal-pane" id="dl-pane-link" style="display: none;">
+          <div class="form-group">
+            <label class="form-label">Direct File URL</label>
+            <input type="text" class="form-input" id="modal-dl-link-url"
+              placeholder="https://example.com/file.iso">
+            <div style="font-size: 0.72rem; color: var(--text-dim); margin-top: 8px; line-height: 1.5;">
+              <i data-lucide="info" style="width: 12px; height: 12px; display: inline; vertical-align: -1px;"></i>
+              Any HTTP/HTTPS file link — resumable, chunked download. The filename is read from the server
+              response when available.
+            </div>
+          </div>
+        </div>
+
+        <!-- Shared destination options -->
         <div class="form-group">
-          <label class="form-label">Category (Auto-sorts into target NAS folder)</label>
+          <label class="form-label">Save Folder (Optional)</label>
+          <div style="display: flex; flex-wrap: wrap; gap: 8px; align-items: center;">
+            <input type="text" class="form-input" id="modal-dl-custom-dir"
+              placeholder="Downloads — click Browse to choose a folder"
+              style="flex: 1 1 180px; min-width: 0;">
+            <button type="button" class="btn btn-secondary" id="modal-dl-browse-btn" style="flex-shrink: 0;">
+              <i data-lucide="folder-search"></i> Browse
+            </button>
+            <button type="button" class="btn btn-secondary" id="modal-dl-backup-btn" style="flex-shrink: 0;">
+              <i data-lucide="shield"></i> Backup
+            </button>
+          </div>
+        </div>
+        <div class="form-group">
+          <label style="display: flex; align-items: flex-start; gap: 8px; font-size: 0.83rem; color: var(--text-muted); cursor: pointer; margin: 0;">
+            <input type="checkbox" id="modal-dl-sort-type" checked
+              style="width: 16px; height: 16px; margin-top: 1px; accent-color: var(--accent-cyan); cursor: pointer; flex-shrink: 0;">
+            <span>Sort into type folders (Images, Video, Audio, Documents, Archives, Disk&nbsp;Images, Programs, Other). Uncheck to use the category below instead.</span>
+          </label>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Category (used when type-sorting is off)</label>
           <select class="form-select" id="modal-dl-category">
             <option value="downloads">Auto-detect from extension</option>
             <option value="media">Media (Movies / Shows / Music)</option>
@@ -833,18 +939,6 @@
             <option value="software">Software & Apps</option>
             <option value="backups">Backups</option>
           </select>
-        </div>
-        <div class="form-group">
-          <label class="form-label">Custom Save Subdirectory (Optional)</label>
-          <input type="text" class="form-input" id="modal-dl-custom-dir" placeholder="e.g. Movies/SciFi">
-        </div>
-
-        <!-- yt-dlp health / update strip -->
-        <div id="modal-dl-ytdlp-strip"
-          style="display: none; align-items: center; justify-content: space-between; gap: 10px; font-size: 0.72rem; color: var(--text-dim); border-top: 1px solid rgba(255,255,255,0.06); padding-top: 10px; margin-top: 4px;">
-          <span id="modal-dl-ytdlp-status">Checking yt-dlp…</span>
-          <button class="btn btn-secondary btn-sm" id="modal-dl-ytdlp-update" style="display: none;"><i
-              data-lucide="refresh-cw"></i> Update yt-dlp</button>
         </div>
       </div>
       <div class="modal-footer">
@@ -912,6 +1006,32 @@
         <span id="dest-picker-warn" style="font-size: 0.75rem; color: var(--accent-amber); margin-right: auto;"></span>
         <button class="btn btn-secondary modal-close">Cancel</button>
         <button class="btn btn-primary" id="dest-picker-confirm"><i data-lucide="check"></i> <span id="dest-picker-confirm-label">Move here</span></button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Reusable Folder Picker Modal (uploader + download destination) -->
+  <div class="modal-backdrop" id="modal-folder-picker">
+    <div class="modal-card">
+      <div class="modal-header">
+        <h3 class="modal-title" id="fp-title"><i data-lucide="folder-search"></i> Choose folder</h3>
+        <button class="btn btn-secondary btn-icon modal-close"><i data-lucide="x"></i></button>
+      </div>
+      <div class="modal-body">
+        <div id="fp-breadcrumbs"
+          style="display: flex; flex-wrap: wrap; align-items: center; gap: 4px; font-size: 0.8rem; padding: 8px 10px; background: rgba(255,255,255,0.03); border: 1px solid var(--border-glass); border-radius: var(--radius-md); margin-bottom: 8px;"></div>
+        <div id="fp-list"
+          style="max-height: 300px; overflow-y: auto; border: 1px solid var(--border-glass); border-radius: var(--radius-md);"></div>
+        <div style="display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px;">
+          <input type="text" class="form-input" id="fp-newfolder-input" placeholder="New subfolder name…"
+            autocomplete="off" spellcheck="false" style="flex: 1 1 160px; min-width: 0;">
+          <button class="btn btn-secondary" id="fp-newfolder-btn" style="flex-shrink: 0;"><i data-lucide="folder-plus"></i> Create</button>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <span style="font-size: 0.75rem; color: var(--text-dim); margin-right: auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">Selected: <span id="fp-current" style="color: var(--accent-cyan); font-family: var(--font-mono);">/ (storage root)</span></span>
+        <button class="btn btn-secondary modal-close">Cancel</button>
+        <button class="btn btn-primary" id="fp-confirm"><i data-lucide="check"></i> <span id="fp-confirm-label">Select this folder</span></button>
       </div>
     </div>
   </div>
@@ -1025,6 +1145,7 @@
 
   <!-- Scripts -->
   <script src="js/api.js"></script>
+  <script src="js/folder_picker.js"></script>
   <script src="js/dashboard.js"></script>
   <script src="js/file_manager.js"></script>
   <script src="js/download_manager.js"></script>

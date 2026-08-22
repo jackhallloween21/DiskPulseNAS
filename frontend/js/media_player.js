@@ -205,7 +205,13 @@ class WebMediaPlayer {
     this.bindSeekBar();
     this.bindKeyboard();
 
-    document.addEventListener('fullscreenchange', () => this.updateFullscreenIcon());
+    document.addEventListener('fullscreenchange', () => this.onFullscreenChange());
+    document.addEventListener('webkitfullscreenchange', () => this.onFullscreenChange());
+  }
+
+  onFullscreenChange() {
+    this.updateFullscreenIcon();
+    this.syncOrientationLock();
   }
 
   /** Single tap = play/pause; double tap left/right third = seek ±10s,
@@ -395,6 +401,24 @@ class WebMediaPlayer {
     const fs = document.fullscreenElement || document.webkitFullscreenElement;
     btn.innerHTML = `<i data-lucide="${fs ? 'minimize' : 'maximize'}"></i>`;
     if (window.lucide) lucide.createIcons();
+  }
+
+  /** On phones, rotate to landscape while the video is fullscreen for a proper
+   *  cinema view, and release the lock when leaving fullscreen. Feature-detected
+   *  and promise-guarded so it silently no-ops on desktop, iOS Safari, or any
+   *  browser without the Screen Orientation API (the lock only works while an
+   *  element is actually fullscreen, which is exactly when we call it). */
+  syncOrientationLock() {
+    const orientation = screen.orientation;
+    if (!orientation) return;
+    const fs = document.fullscreenElement || document.webkitFullscreenElement;
+    if (fs) {
+      if (typeof orientation.lock === 'function') {
+        Promise.resolve(orientation.lock('landscape')).catch(() => {});
+      }
+    } else if (typeof orientation.unlock === 'function') {
+      try { orientation.unlock(); } catch (_) {}
+    }
   }
 
   // ----------------------------------------------------------------- library

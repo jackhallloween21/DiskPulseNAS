@@ -26,6 +26,7 @@ choice (2160p…360p) or audio-only extraction at a chosen MP3 bitrate.
 """
 import datetime
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -119,7 +120,7 @@ def ytdlp_version_info() -> Dict[str, Any]:
 
 def update_ytdlp() -> Dict[str, Any]:
     """Run `pip install -U yt-dlp` in-process and report the outcome."""
-    cmd = [sys.executable, "-m", "pip", "install", "-U", "--no-input", "yt-dlp"]
+    cmd = [sys.executable, "-m", "pip", "install", "-U", "--no-input", "yt-dlp[default]"]
     try:
         proc = subprocess.run(
             cmd, capture_output=True, text=True, timeout=300, creationflags=_CREATE_NO_WINDOW
@@ -377,6 +378,7 @@ def build_ydl_opts(
         "format": build_format_selector(mode, max_height, ffmpeg, format_id, progressive),
         "quiet": True,
         "no_warnings": True,
+        "no_color": True,  # never emit ANSI colour codes into captured error text
         "noprogress": True,
         "noplaylist": True,
         "continuedl": True,
@@ -424,9 +426,17 @@ def build_ydl_opts(
 
 def friendly_error(exc: Exception) -> str:
     """Turn yt-dlp's raw failure into something actionable in the UI."""
-    raw = str(exc)
+    # Strip any ANSI colour codes yt-dlp embedded (e.g. "\x1b[0;31mERROR:\x1b[0m …").
+    raw = re.sub(r"\x1b\[[0-9;]*m", "", str(exc))
     low = raw.lower()
 
+    if "impersonat" in low:
+        return (
+            "This site needs browser impersonation, which requires the optional "
+            "'curl_cffi' package. Install it with:  pip install -U \"yt-dlp[default]\"  "
+            "(or  pip install curl_cffi ) — or click 'Update yt-dlp' in the Add Download "
+            "dialog — then restart DiskPulse and retry."
+        )
     if "not a bot" in low or "sign in to confirm" in low:
         cookies = detect_cookie_browser()
         hint = (

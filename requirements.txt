@@ -7,7 +7,9 @@ humanize>=4.9.0
 psutil>=5.9.8
 pydantic>=2.6.0
 python-multipart>=0.0.9
-yt-dlp
+# [default] pulls in curl_cffi (browser TLS impersonation) — required by some
+# extractors such as Dailymotion, plus mutagen/pycryptodomex/websockets/brotli.
+yt-dlp[default]
 libtorrent
 torrentp
 

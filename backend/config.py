@@ -44,5 +44,50 @@ DOWNLOAD_CATEGORIES = {
     "backups":   ["bak", "tar", "gz", "dump", "sql", "bundle"],
 }
 
+# ── Type-based sort folders (uploads + downloads) ─────────────────────────────
+# When "sort into type folders" is enabled, an incoming file is dropped into the
+# matching subfolder below (nested inside the chosen destination). This is the
+# single source of truth shared by the uploader and the download engine so both
+# organise files identically. Order matters: the FIRST bucket that lists an
+# extension wins, and anything unmatched lands in "Other".
+FILE_TYPE_FOLDERS = {
+    "Images":      [".jpg", ".jpeg", ".png", ".gif", ".bmp", ".webp", ".svg",
+                    ".tif", ".tiff", ".heic", ".heif", ".avif", ".ico", ".raw"],
+    "Video":       [".mp4", ".mkv", ".avi", ".mov", ".webm", ".flv", ".wmv",
+                    ".m4v", ".mpg", ".mpeg", ".ts", ".m2ts", ".3gp", ".ogv"],
+    "Audio":       [".mp3", ".flac", ".wav", ".aac", ".ogg", ".m4a", ".wma",
+                    ".opus", ".aiff", ".alac", ".mid", ".midi"],
+    "Documents":   [".pdf", ".doc", ".docx", ".xls", ".xlsx", ".ppt", ".pptx",
+                    ".txt", ".md", ".csv", ".rtf", ".odt", ".ods", ".odp",
+                    ".epub", ".mobi", ".json", ".xml"],
+    "Archives":    [".zip", ".rar", ".7z", ".tar", ".gz", ".tgz", ".bz2",
+                    ".xz", ".zst", ".lz", ".lzma", ".cab", ".arj"],
+    "Disk Images": [".iso", ".img", ".vmdk", ".qcow2", ".vdi", ".vhd", ".vhdx",
+                    ".bin", ".cue", ".nrg", ".toast"],
+    "Programs":    [".exe", ".msi", ".msix", ".apk", ".deb", ".rpm", ".appimage",
+                    ".pkg", ".dmg", ".bat", ".sh", ".jar", ".flatpak", ".snap"],
+}
+
+# Folder used when no extension bucket matches.
+FILE_TYPE_OTHER = "Other"
+
+
+def folder_for_extension(ext: str) -> str:
+    """Return the type-folder name (Images, Video, …) for a file extension.
+
+    Accepts the extension with or without a leading dot; matching is
+    case-insensitive. Unknown or blank extensions map to ``Other``.
+    """
+    if not ext:
+        return FILE_TYPE_OTHER
+    ext = ext.lower()
+    if not ext.startswith("."):
+        ext = "." + ext
+    for folder, exts in FILE_TYPE_FOLDERS.items():
+        if ext in exts:
+            return folder
+    return FILE_TYPE_OTHER
+
+
 # Ensure the storage directory exists
 Path(STORAGE_ROOT).mkdir(parents=True, exist_ok=True)
